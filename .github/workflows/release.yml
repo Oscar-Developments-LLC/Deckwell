@@ -20,11 +20,14 @@ jobs:
           dotnet-version: '8.0.x'
       - name: Desktop tests (pairing crypto vs shared vector)
         run: dotnet test tests/desktop
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
       - uses: android-actions/setup-android@v3
+        with:
+          # The default also asks for the old "tools" package, which Google removed.
+          packages: 'platform-tools'
       - name: Deck tests (pairing, signed link, renders)
         working-directory: android
         run: |
@@ -64,11 +67,14 @@ jobs:
         working-directory: android
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
       - uses: android-actions/setup-android@v3
+        with:
+          # The default also asks for the old "tools" package, which Google removed.
+          packages: 'platform-tools'
       - name: Release keystore (optional)
         env:
           KEYSTORE_B64: ${{ secrets.DECKWELL_KEYSTORE_B64 }}
