@@ -1,0 +1,23 @@
+{
+  "desktopPrivPkcs8": "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgHTxef5sqTG6PChs8XX6fGitMbY4PGjtcfZ4fKktsjQ6hRANCAAQHfwq6+VoEsiD6KKt2Jn7GVH8H1l8XHMf2TaLM0QoT6r7Q0B3LZ1RhSmhi4zxc1HFRUwliDyj/V/NXxuDozfnG",
+  "deckPrivPkcs8": "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgLk1siwofPl18mxovTm2MCxo/Xn2cGypPbo0MK0pvjh2hRANCAATLjP3CT37t4E4loC08xki2n/UafrVBkwIqBoSfU6PcTUAs1uvOccfwKTDPeFAMqkOOdKjkmy3+IUgWA2luw0tM",
+  "pkD": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEB38KuvlaBLIg+iirdiZ+xlR/B9ZfFxzH9k2izNEKE+q+0NAdy2dUYUpoYuM8XNRxUVMJYg8o/1fzV8bg6M35xg==",
+  "pkK": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEy4z9wk9+7eBOJaAtPMZItp/1Gn61QZMCKgaEn1Oj3E1ALNbrznHH8Ckwz3hQDKpDjnSo5Jst/iFIFgNpbsNLTA==",
+  "nD2": "AAECAwQFBgcICQoLDA0ODw==",
+  "nK2": "EBESExQVFhcYGRobHB0eHw==",
+  "nK": "ICEiIyQlJicoKSorLC0uLw==",
+  "nD": "MDEyMzQ1Njc4OTo7PD0+Pw==",
+  "commit": "+aV/ycB928xInRxyWeLu7lPM/9Dfk6HjL30TufXSmVY=",
+  "Z": "4OoWrtkMeEUIKJ47aT9l0T3IpExR+StSeUfSRIn1nys=",
+  "K": "A8drErpPkCGJi+PuKS0TyaTwjyQFmZAIs49jtU9LdyU=",
+  "code": "098195",
+  "authDesk": "tYdczWRvdH2OBEHNXlZVCPAdc2+qnbvHYuM9KCBHx0A=",
+  "authDeck": "T3hwjCpgDej4+wIQRRvkHeqY3ZDz/TgK0XD5RUEov7E=",
+  "doneDesk": "cQE1LFyiP040P61HoalnyWcCD7LTmzjNHELgQ2WGBis=",
+  "doneDeck": "T0b5AGzI/ZO4ZVyQ2FyXJIVcYrZ6fwkAL45aERfYaT8=",
+  "S": "kt17d2w7PQNjkxG5HC6r5RByGC6SebdaCT+bkMPOgxs=",
+  "envDir": "k2d",
+  "envN": 7,
+  "envP": "{\"t\":\"down\",\"key\":\"k1\"}",
+  "envMac": "CxHSoC1Hx9TnT4zOGRWPOQvs1AmlRLZ2/RmoxABkU7U="
+}

@@ -1,0 +1,28 @@
+# .NET / Visual Studio
+bin/
+obj/
+.vs/
+*.user
+*.suo
+
+# Android / Gradle
+.gradle/
+.kotlin/
+.idea/
+build/
+local.properties
+*.iml
+captures/
+
+# Build outputs and secrets
+*.apk
+*.aab
+*.exe
+*.exe.part*
+*.keystore
+*.jks
+shared/render/
+
+# OS
+.DS_Store
+Thumbs.db

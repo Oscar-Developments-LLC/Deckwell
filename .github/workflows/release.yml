@@ -1,0 +1,114 @@
+name: Release
+
+# Tag a release with a v prefix (v1.0.0, not 1.0.0) or this never runs.
+# Use "Run workflow" on the Actions tab for a test build without publishing.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Desktop tests (pairing crypto vs shared vector)
+        run: dotnet test tests/desktop
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - name: Deck tests (pairing, signed link, renders)
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon testCurrentDebugUnitTest
+
+  windows:
+    needs: tests
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Publish
+        run: dotnet publish desktop/Deckwell.csproj -c Release -o out
+      - name: Bundle adb (Android platform-tools)
+        shell: pwsh
+        run: |
+          Invoke-WebRequest https://dl.google.com/android/repository/platform-tools-latest-windows.zip -OutFile pt.zip
+          Expand-Archive pt.zip -DestinationPath pt
+          New-Item -ItemType Directory out/adb | Out-Null
+          Copy-Item pt/platform-tools/adb.exe, pt/platform-tools/AdbWinApi.dll, pt/platform-tools/AdbWinUsbApi.dll, pt/platform-tools/NOTICE.txt out/adb/
+          Copy-Item pt/platform-tools/libwinpthread-1.dll out/adb/ -ErrorAction SilentlyContinue
+          Copy-Item LICENSE out/
+          Compress-Archive -Path out/Deckwell.exe, out/adb, out/LICENSE -DestinationPath Deckwell-windows-x64.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: Deckwell-windows-x64.zip
+
+  android:
+    needs: tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: android
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - name: Release keystore (optional)
+        env:
+          KEYSTORE_B64: ${{ secrets.DECKWELL_KEYSTORE_B64 }}
+        run: |
+          if [ -n "$KEYSTORE_B64" ]; then
+            echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/release.jks"
+            echo "DECKWELL_KEYSTORE=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
+          else
+            echo "No keystore secret: APKs will be debug-signed."
+          fi
+      - name: Build
+        env:
+          DECKWELL_KEYSTORE_PASSWORD: ${{ secrets.DECKWELL_KEYSTORE_PASSWORD }}
+          DECKWELL_KEY_ALIAS: ${{ secrets.DECKWELL_KEY_ALIAS }}
+          DECKWELL_KEY_PASSWORD: ${{ secrets.DECKWELL_KEY_PASSWORD }}
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon assembleLegacyRelease assembleCurrentRelease bundleCurrentRelease
+          mkdir -p ../dist
+          cp app/build/outputs/apk/legacy/release/*.apk ../dist/Deckwell-android-legacy.apk
+          cp app/build/outputs/apk/current/release/*.apk ../dist/Deckwell-android.apk
+          cp app/build/outputs/bundle/currentRelease/*.aab ../dist/Deckwell-android-playstore.aab
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android
+          path: dist/*
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [windows, android]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/Deckwell-windows-x64.zip
+            dist/Deckwell-android-legacy.apk
+            dist/Deckwell-android.apk
+          generate_release_notes: true

@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Deckwell</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header id="titlebar">
+  <div class="tb-brand"><span class="tb-logo" data-g="grid"></span><span class="tb-name">Deckwell</span></div>
+  <div class="tb-drag"></div>
+  <div class="tb-sync" id="sync"><span data-g="circle-check"></span><span id="syncText">Synced to deck</span></div>
+  <button class="tb-help" id="helpBtn" title="How Deckwell works"><span data-g="lightbulb"></span>Help</button>
+  <div class="tb-controls">
+    <button class="tb-btn" data-win="min" title="Minimize"><svg viewBox="0 0 10 10"><path d="M1 5h8"/></svg></button>
+    <button class="tb-btn" data-win="max" title="Maximize"><svg viewBox="0 0 10 10"><rect x="1.5" y="1.5" width="7" height="7"/></svg></button>
+    <button class="tb-btn tb-close" data-win="close" title="Close"><svg viewBox="0 0 10 10"><path d="M1.5 1.5l7 7M8.5 1.5l-7 7"/></svg></button>
+  </div>
+</header>
+
+<main id="app">
+  <aside id="sidebar">
+    <div class="devcard" id="devcard">
+      <div class="dev-head"><span data-g="tablet"></span><span id="devName">No deck yet</span></div>
+      <div class="dev-pills" id="devPills"></div>
+      <div class="dev-addr" id="devAddr"></div>
+      <div class="dev-pair" id="devPair" hidden></div>
+    </div>
+    <div class="side-label">PAGES</div>
+    <nav id="pages"></nav>
+    <div class="side-add">
+      <button class="link" id="addPage"><span data-g="plus"></span>Page</button>
+      <button class="link" id="addFolder"><span data-g="folder-plus"></span>Folder</button>
+    </div>
+  </aside>
+
+  <section id="center">
+    <div class="center-head">
+      <h1 id="pageTitle">Main</h1>
+      <div class="head-controls">
+        <label class="ctl-label">Columns</label>
+        <div class="stepper" id="colStep"><button data-d="-1"><span data-g="minus"></span></button><span class="val"></span><button data-d="1"><span data-g="plus"></span></button></div>
+        <label class="ctl-label">Rows</label>
+        <div class="stepper" id="rowStep"><button data-d="-1"><span data-g="minus"></span></button><span class="val"></span><button data-d="1"><span data-g="plus"></span></button></div>
+        <label class="ctl-label">Sliders</label>
+        <div class="seg" id="sliderSeg"><button data-v="left">Left</button><button data-v="right">Right</button><button data-v="off">Off</button></div>
+        <label class="ctl-label" id="sliderStepLabel">Count</label>
+        <div class="stepper" id="sliderStep"><button data-d="-1"><span data-g="minus"></span></button><span class="val"></span><button data-d="1"><span data-g="plus"></span></button></div>
+      </div>
+    </div>
+    <div class="board-wrap" id="boardWrap">
+      <div class="board" id="board"><div class="board-inner" id="boardInner"></div></div>
+    </div>
+    <div class="actions">
+      <div class="actions-head"><span class="side-label">ACTIONS</span><span class="hint">Drag onto a key</span></div>
+      <div class="palette" id="palette"></div>
+    </div>
+  </section>
+
+  <aside id="inspector"></aside>
+</main>
+
+<div id="toast"></div>
+<div id="intro" hidden></div>
+<div id="popover" class="popover" hidden></div>
+
+<script src="glyphs.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
