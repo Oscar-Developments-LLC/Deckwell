@@ -135,9 +135,14 @@ sealed class Audio : IDisposable
         using var render = en.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
         MMDevice? mic = null;
         try { mic = en.GetDefaultAudioEndpoint(DataFlow.Capture, Role.Multimedia); } catch { }
-        var mgr = render.AudioSessionManager; mgr.RefreshSessions();
+        // Walking the session list creates a pile of COM objects, so only do it when an app slider needs it
+        // (every poll) or when the editor's app list is due a refresh (every 2 s).
         var sesList = new List<AudioSessionControl>();
-        for (int i = 0; i < mgr.Sessions.Count; i++) sesList.Add(mgr.Sessions[i]);
+        if (refreshSessions || sliders.Any(s => s.Control is not ("master" or "mic")))
+        {
+            var mgr = render.AudioSessionManager; mgr.RefreshSessions();
+            for (int i = 0; i < mgr.Sessions.Count; i++) sesList.Add(mgr.Sessions[i]);
+        }
 
         var changed = new Dictionary<string, State>();
         foreach (var s in sliders)
@@ -164,6 +169,7 @@ sealed class Audio : IDisposable
             if (sig != _sessionsSig) { _sessionsSig = sig; Sessions = names.Select(n => new Session(n, Pretty(n))).ToList(); SessionsChanged?.Invoke(Sessions); }
             lock (ProcNames) if (ProcNames.Count > 500) ProcNames.Clear();
         }
+        foreach (var x in sesList) x.Dispose();
     }
 
     public void Dispose() { _stop = true; _wake.Set(); }

@@ -9,7 +9,13 @@ namespace Deckwell;
 
 sealed class MainForm : Form
 {
-    readonly WebView2 _web = new() { Dock = DockStyle.Fill, DefaultBackgroundColor = Color.FromArgb(0x1a, 0x1c, 0x29) };
+    // The editor (WebView2) only exists while the window is on screen. Minimized for SleepAfterMs, it is torn down
+    // and every msedgewebview2 helper process exits; restoring the window rebuilds it. The deck link, sliders,
+    // status tiles and Now Playing all live in Hub, so the deck keeps working while the editor sleeps.
+    WebView2? _web;
+    readonly System.Windows.Forms.Timer _sleepTimer = new() { Interval = SleepAfterMs };
+    const int SleepAfterMs = 15000;
+    bool _waking, _loaded;
     readonly Hub _hub;
     readonly KeyboardRecorder _recorder;
     readonly Dictionary<string, byte[]> _ui = new(StringComparer.OrdinalIgnoreCase);
@@ -26,7 +32,6 @@ sealed class MainForm : Form
         FormBorderStyle = FormBorderStyle.Sizable;
         Padding = new Padding(0, TopGrip, 0, 0);
         try { Icon = Icon.ExtractAssociatedIcon(Environment.ProcessPath!); } catch { }
-        Controls.Add(_web);
 
         _hub = new Hub(PostEvent);
         _recorder = new KeyboardRecorder((name, vk, down) => PostEvent("recKey", new { name, vk, down }));
@@ -39,9 +44,50 @@ sealed class MainForm : Form
                 _ui[n[3..].Replace('\\', '/')] = ms.ToArray();
             }
 
-        Load += async (_, _) => await InitWeb();
-        FormClosing += (_, _) => { _recorder.Dispose(); _hub.Dispose(); };
-        Resize += (_, _) => PostEvent("maximized", WindowState == FormWindowState.Maximized);
+        Load += async (_, _) => { _loaded = true; await WakeEditor(); };
+        FormClosing += (_, _) => { _sleepTimer.Dispose(); _recorder.Dispose(); _hub.Dispose(); };
+        Resize += async (_, _) =>
+        {
+            if (WindowState == FormWindowState.Minimized) { _sleepTimer.Stop(); _sleepTimer.Start(); return; }
+            _sleepTimer.Stop();
+            if (_loaded && _web == null) await WakeEditor();
+            PostEvent("maximized", WindowState == FormWindowState.Maximized);
+        };
+        _sleepTimer.Tick += (_, _) => { _sleepTimer.Stop(); if (WindowState == FormWindowState.Minimized) SleepEditor(); };
+        // In the background the editor gives memory back; it's restored when the window is used again.
+        Activated += (_, _) => SetWebMemory(CoreWebView2MemoryUsageTargetLevel.Normal);
+        Deactivate += (_, _) => SetWebMemory(CoreWebView2MemoryUsageTargetLevel.Low);
+    }
+
+    /* ---------------- editor sleep / wake ---------------- */
+    async Task WakeEditor()
+    {
+        if (_web != null || _waking) return;
+        _waking = true;
+        try
+        {
+            _web = new WebView2 { Dock = DockStyle.Fill, DefaultBackgroundColor = Color.FromArgb(0x1a, 0x1c, 0x29) };
+            Controls.Add(_web);
+            await InitWeb();
+        }
+        finally { _waking = false; }
+    }
+
+    void SleepEditor()
+    {
+        if (_web == null || _waking) return;
+        _ready = false;
+        try { _recorder.Stop(); } catch { }
+        var web = _web; _web = null;
+        Controls.Remove(web);
+        try { web.Dispose(); } catch (Exception e) { Log.Write("editor sleep: " + e.Message); }
+        Log.Write("editor asleep (window minimized)");
+        Mem.Trim();
+    }
+
+    void SetWebMemory(CoreWebView2MemoryUsageTargetLevel level)
+    {
+        try { if (_ready && _web?.CoreWebView2 != null) _web.CoreWebView2.MemoryUsageTargetLevel = level; } catch { }
     }
 
     /* ---------------- custom chrome: keep native resize borders, drop the caption ---------------- */
@@ -86,7 +132,12 @@ sealed class MainForm : Form
     {
         try
         {
-            var env = await CoreWebView2Environment.CreateAsync(null, Paths.WebData);
+            // One renderer is plenty for a single local page, and none of Edge's background services are needed.
+            var opts = new CoreWebView2EnvironmentOptions(
+                "--renderer-process-limit=1 --disable-background-networking --disable-component-update --disable-sync " +
+                "--disable-features=Translate,msSmartScreenProtection,msWebOOUI,msPdfOOUI,msEdgeShoppingAssistant");
+            var env = await CoreWebView2Environment.CreateAsync(null, Paths.WebData, opts);
+            if (_web == null) return;
             await _web.EnsureCoreWebView2Async(env);
         }
         catch (Exception e)
@@ -94,6 +145,7 @@ sealed class MainForm : Form
             MessageBox.Show("Deckwell needs the Microsoft Edge WebView2 Runtime.\n\nGet it from https://go.microsoft.com/fwlink/p/?LinkId=2124703\n\n" + e.Message, "Deckwell", MessageBoxButtons.OK, MessageBoxIcon.Error);
             Close(); return;
         }
+        if (_web?.CoreWebView2 == null) return;
         var w = _web.CoreWebView2;
         var dev = Environment.GetEnvironmentVariable("DECKWELL_DEV") == "1";
         w.Settings.AreDevToolsEnabled = dev;
@@ -118,7 +170,7 @@ sealed class MainForm : Form
         byte[]? body = null;
         if (path.StartsWith("icons/")) body = Icons.Read(Path.GetFileNameWithoutExtension(path));
         else _ui.TryGetValue(path.Length == 0 ? "index.html" : path, out body);
-        var env = _web.CoreWebView2.Environment;
+        var env = _web?.CoreWebView2?.Environment; if (env == null) return;
         if (body == null) { e.Response = env.CreateWebResourceResponse(null, 404, "Not Found", ""); return; }
         var type = Path.GetExtension(path).ToLowerInvariant() switch
         {
@@ -135,7 +187,7 @@ sealed class MainForm : Form
         {
             BeginInvoke(() =>
             {
-                if (!_ready || _web.CoreWebView2 == null) return;
+                if (!_ready || _web?.CoreWebView2 == null) return;
                 _web.CoreWebView2.PostWebMessageAsJson(JsonSerializer.Serialize(new { @event = name, data }, Json.Opts));
             });
         }
@@ -145,7 +197,7 @@ sealed class MainForm : Form
     void Reply(object id, object? result, string? error = null)
     {
         var json = error == null ? JsonSerializer.Serialize(new { id, result }, Json.Opts) : JsonSerializer.Serialize(new { id, error }, Json.Opts);
-        _web.CoreWebView2?.PostWebMessageAsJson(json);
+        _web?.CoreWebView2?.PostWebMessageAsJson(json);
     }
 
     async void OnMessage(object? sender, CoreWebView2WebMessageReceivedEventArgs e)
@@ -164,6 +216,7 @@ sealed class MainForm : Form
         switch (cmd)
         {
             case "getState":
+                PostEvent("maximized", WindowState == FormWindowState.Maximized); // editor may have just woken up
                 PostEvent("np", _hub.NpForUi(_hub.Media.Current));
                 PostEvent("sliders", _hub.SlidersSnapshot());
                 foreach (var st in _hub.Feeds.Snapshot()) PostEvent("status", st);

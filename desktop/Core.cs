@@ -127,3 +127,22 @@ static class Native
         if (fgThread != me) AttachThreadInput(me, fgThread, false);
     }
 }
+
+/// Gives memory back to Windows after the editor goes to sleep.
+static class Mem
+{
+    [DllImport("psapi.dll")] static extern bool EmptyWorkingSet(IntPtr hProcess);
+
+    public static void Trim()
+    {
+        try
+        {
+            System.Runtime.GCSettings.LargeObjectHeapCompactionMode = System.Runtime.GCLargeObjectHeapCompactionMode.CompactOnce;
+            GC.Collect(2, GCCollectionMode.Aggressive, true, true);
+            GC.WaitForPendingFinalizers();
+            GC.Collect(2, GCCollectionMode.Aggressive, true, true);
+            EmptyWorkingSet(System.Diagnostics.Process.GetCurrentProcess().Handle);
+        }
+        catch (Exception e) { Log.Write("trim: " + e.Message); }
+    }
+}
