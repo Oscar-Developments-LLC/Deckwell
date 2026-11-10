@@ -181,7 +181,7 @@ class RenderTest {
         "+- P620 --------------+ +- V100 --------------+", "| Temp   41 C         | | Temp   54 C         |", "| Load   2%           | | Load   37%          |",
         "| Mem    0.3/2.0 GB   | | Mem    1.2/16.0 GB  |", "| Power  n/a          | | Power  39/250 W     |", "+---------------------+ +---------------------+")
     private fun bigPanel(w: Int, h: Int): Layout {
-        val keys = org.json.JSONArray().put(JSONObject().put("id", "node").put("row", 0).put("col", 0).put("span", w).put("vspan", h).put("kind", "panel").put("label", "node1").put("title", "node1"))
+        val keys = org.json.JSONArray().put(JSONObject().put("id", "node").put("row", 0).put("col", 0).put("span", w).put("vspan", h).put("kind", "panel").put("label", "Server").put("title", "Server"))
         val page = JSONObject().put("id", "p").put("name", "Server").put("cols", 5).put("rows", 3).put("keys", keys).put("strip", org.json.JSONArray())
         return Layout.parse(JSONObject().put("pages", org.json.JSONArray().put(page)))
     }
