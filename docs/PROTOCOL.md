@@ -104,8 +104,10 @@ Messages are signed, **not encrypted**. Someone on the network can read the layo
 
 ## Inner messages (sent inside `"t":"s"`)
 
-- **Desktop to deck:** `ping`, `layout`, `icon`, `np`, `sliders`, `status`, `fb`
-- **Deck to desktop:** `pong`, `down`, `up`, `set`, `sbtn`, `need`
+- **Desktop to deck:** `ping`, `layout`, `icon`, `np`, `sliders`, `status`, `panel`, `winpick`, `fb`
+- **Deck to desktop:** `pong`, `down`, `up`, `set`, `sbtn`, `need`, `snap`
+
+`panel`, `winpick` and `snap` were added in 1.1. A deck or desktop that doesn't know a message type ignores it.
 
 ### Layout pages
 
@@ -116,6 +118,32 @@ Each page in `layout.pages` has `cols` (1-8), `rows` (1-6), `keys`, and:
 
 The strip is `n * 92 + (n - 1) * 50` design units wide, with a 60-unit gap to the keys, in a 1920 x 1200 design space. The desktop editor and every deck app use the same numbers so the preview matches the deck.
 
+Each key has `row`, `col`, `span` (width in keys, 1 to 4) and `vspan` (height in keys, 1 to 3; missing means 1). `kind` is `key`, `status`, `np` (Now Playing, span 2) or `panel`. A deck clamps a key that runs past the page edge.
+
+### Orientation and portrait (1.1)
+
+Folder pages (pages with a `parent`) also have `backRow` and `backCol`: where the Back key sits (missing means 0, 0; outside the grid means 0, 0). A key covering that spot is hidden.
+
+`layout` has `orient`: `"landscape"`, `"portrait"` or `"auto"` (turn with the device, respecting its rotation lock). Missing means `"landscape"`.
+
+In portrait the design space is **1200 x 1920**. Each page also has:
+
+- `porder`: `"reading"` or `"mirror"` (missing means reading)
+- `pside`: `"top"` or `"bottom"`, where the sliders go in portrait (missing means bottom)
+
+A `cols x rows` page shows as `rows x cols`. Keys (including a folder's Back key at 0,0) are placed one at a time, in landscape reading order (by row, then column):
+
+1. Start spot, as an index into the portrait grid read left to right, top to bottom (`pc` = portrait columns = `rows`):
+   - reading: `row * cols + col`
+   - mirror: `col * pc + row` (row and column swap)
+2. Size: `w = min(span, pc)`, `h = min(vspan, portrait rows)`.
+3. From the start spot, go forward in reading order (wrapping to the top) to the first spot where a `w x h` key fits on free cells.
+4. If it fits nowhere, try smaller sizes: height from `h` down to 1, and for each height, width from `w` down to 1. If even 1 x 1 doesn't fit, the key is left out.
+
+`shared/portrait-vector.json` has test cases (made from the editor's `desktop/ui/portrait.js`). Every deck must match it.
+
+Portrait geometry: pad 37, top 132, bottom reserve 178, gap 28, keys as wide as fits and no taller than they are wide. Sliders are rows of height 92 with a 50 gap, stacked across the full width (`n * 92 + (n - 1) * 50` tall, with a 60 gap to the keys). The top strip starts at y = 132; the bottom strip ends at y = 1920 - 178. Each slider row has a 150-wide label column, then the track, then (if it has one) the 92 x 92 button with a 40 gap before it. Screens without a page (pairing, offline) keep the landscape design, scaled to the width and centered.
+
 ### Status
 
 ```json
@@ -123,6 +151,51 @@ The strip is `n * 92 + (n - 1) * 50` design units wide, with a 60-unit gap to th
 ```
 
 `value`, `sub` and `bar` are left out when there's nothing to show. They are never sent as `null`. `bar` is 0 to 1.
+
+### Panel (1.1)
+
+```json
+{"t":"panel","id":"<key id>","text":"line 1\nline 2","up":true}
+```
+
+`text` is the whole output, already cleaned by the desktop: up to 60 lines of up to 120 characters, no color codes, tabs as spaces. The deck shows it in a fixed-width font and lets you scroll it. `up` is false when the command failed.
+
+Text size: as large as fits, between 21 and 64 design units. With `n` lines, the longest `L` characters long, the text area `w` wide and `h` tall (the panel minus 26 on each side, 84 at the top and 18 at the bottom), size = `min(w / (L * advance), h / (n * 30/21))`, where `advance` is the font's character width per unit of size (0.6 for JetBrains Mono). Line height is 30/21 of the size.
+
+### Window picker (1.1)
+
+When a Window picker key is pressed, the desktop sends:
+
+```json
+{"t":"winpick","key":"<key id>",
+ "wins":[{"id":"<window id>","app":"Google Chrome","title":"Inbox","icon":"exe-1a2b3c4d5e6f"}],
+ "mons":[{"id":"\\\\.\\DISPLAY1","name":"Display 1","x":0,"y":0,"w":2560,"h":1440,"main":true,
+          "zones":[{"id":"z1","name":"Code","x":0,"y":0,"w":0.7,"h":1}]}]}
+```
+
+- `wins` is topmost first. `title` is left out when the user hides titles. `icon` is an icon id the deck fetches with `need`.
+- `mons` uses the desktop's own pixel coordinates (they can be negative). Zone `x`, `y`, `w`, `h` are fractions of the monitor's work area.
+
+After the user picks a window, a monitor and a spot, the deck sends:
+
+```json
+{"t":"snap","key":"<key id>","win":"<window id>","mon":"<monitor id>","spot":"left"}
+```
+
+and the desktop answers with an `fb` for that key (a toast with the result). Spot ids and the part of the screen (x, y, w, h as fractions of the work area):
+
+| id | spot | id | spot |
+|---|---|---|---|
+| `max` | 0, 0, 1, 1 (maximized) | `two-l` | 0, 0, 2/3, 1 |
+| `left` | 0, 0, 0.5, 1 | `two-r` | 1/3, 0, 2/3, 1 |
+| `right` | 0.5, 0, 0.5, 1 | `tl` | 0, 0, 0.5, 0.5 |
+| `top` | 0, 0, 1, 0.5 | `tr` | 0.5, 0, 0.5, 0.5 |
+| `bottom` | 0, 0.5, 1, 0.5 | `bl` | 0, 0.5, 0.5, 0.5 |
+| `third-l` | 0, 0, 1/3, 1 | `br` | 0.5, 0.5, 0.5, 0.5 |
+| `third-c` | 1/3, 0, 1/3, 1 | `center` | 0.15, 0.1, 0.7, 0.8 |
+| `third-r` | 2/3, 0, 1/3, 1 | `zone:<id>` | that zone |
+
+The window list (app names and titles) is signed like everything else, not encrypted.
 
 ### Device names
 

@@ -39,6 +39,30 @@ static class Input
 
     public static void TapAlt() => Tap(new ushort[] { 0x12 });
 
+    const uint KEYEVENTF_UNICODE = 0x4;
+
+    /// Types text as if from the keyboard (any language, emoji too). A line break is typed as Enter and a tab as Tab.
+    public static void Type(string text)
+    {
+        var batch = new List<INPUT>();
+        void Flush() { if (batch.Count > 0) { SendInput((uint)batch.Count, batch.ToArray(), Marshal.SizeOf<INPUT>()); batch.Clear(); Thread.Sleep(2); } }
+        foreach (var ch in text.Replace("\r\n", "\n").Replace('\r', '\n'))
+        {
+            if (ch == '\n' || ch == '\t')
+            {
+                ushort vk = ch == '\n' ? (ushort)0x0D : (ushort)0x09;
+                batch.Add(Key(vk, false)); batch.Add(Key(vk, true));
+            }
+            else
+            {
+                batch.Add(new INPUT { type = INPUT_KEYBOARD, U = new InputUnion { ki = new KEYBDINPUT { wScan = ch, dwFlags = KEYEVENTF_UNICODE } } });
+                batch.Add(new INPUT { type = INPUT_KEYBOARD, U = new InputUnion { ki = new KEYBDINPUT { wScan = ch, dwFlags = KEYEVENTF_UNICODE | KEYEVENTF_KEYUP } } });
+            }
+            if (batch.Count >= 64) Flush();
+        }
+        Flush();
+    }
+
     public const ushort VK_MEDIA_NEXT = 0xB0, VK_MEDIA_PREV = 0xB1, VK_MEDIA_STOP = 0xB2, VK_MEDIA_PLAY_PAUSE = 0xB3,
         VK_VOLUME_MUTE = 0xAD, VK_VOLUME_DOWN = 0xAE, VK_VOLUME_UP = 0xAF;
 }

@@ -73,17 +73,43 @@ Runs a command on a server or other computer over SSH.
 
 Shows a live value, like CPU use, a temperature, or whether a server is up. Tapping it can open a link. See [Status tiles](status-tiles.md).
 
+### Panel
+
+A bigger tile (2 x 1 up to 4 x 3 keys) that shows all of a command's output, not just one value. Good for a server's temperatures or its top processes. Swipe up and down on it to scroll. See [Status tiles and panels](status-tiles.md#panels).
+
+### Open terminal
+
+Opens a terminal: a **Windows Terminal** profile, **PowerShell**, **PowerShell 7**, **cmd**, **WSL**, or **SSH** to one of your hosts. You can pick a new window or a new tab, a start folder, a command to run when it opens, and whether it runs as admin. See [Windows and terminals](windows-and-terminals.md#open-terminal).
+
+### Send to terminal
+
+Types text into a terminal that's already open: the one you used last, or one whose title has a word you pick. It types exactly what you wrote and doesn't press Enter for you. See [Windows and terminals](windows-and-terminals.md#send-to-terminal).
+
+### Snap window
+
+Moves the active window (or an app's window) to a spot on a monitor: halves, thirds, quarters, maximize, center, or a zone you drew. See [Windows and terminals](windows-and-terminals.md#snap-window).
+
+### Window picker
+
+Opens a menu on the deck. Pick any open window, then a monitor and a spot. See [Windows and terminals](windows-and-terminals.md#window-picker).
+
+### Window layout
+
+Puts a whole set of windows back where you saved them, and opens any app that isn't running. See [Windows and terminals](windows-and-terminals.md#window-layouts).
+
 ### Now Playing
 
 Shows the song or video playing on your PC: title, artist, app, progress and album art. It takes two keys side by side. Tap it to play or pause.
 
 ### Folder
 
-Opens a page inside this one. The folder page gets a **Back** key in its top-left corner. Double-click a folder key in the editor to open it.
+Opens a page inside this one. The folder page gets a **Back** key, top-left to start. Drag it to any other spot on that page if you like. Double-click a folder key in the editor to open it.
 
 ### Go to page
 
 Jumps the deck to any other page.
+
+**Snap window**, **Open terminal** and **Send to terminal** can also be steps in **Also do**, so one press can open an app and then snap it into place.
 
 ## Labels and icons
 

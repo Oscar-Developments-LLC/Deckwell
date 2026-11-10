@@ -5,6 +5,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.ActivityInfo
 import android.os.BatteryManager
 import android.os.Build
 import android.os.Bundle
@@ -34,6 +35,7 @@ class MainActivity : Activity(), Link.Listener, DeckView.Callbacks {
         immersive()
         deck.pageId = prefs.getString("page", null)
         try { if (layoutFile.exists()) deck.layout = Layout.parse(JSONObject(layoutFile.readText())) } catch (_: Exception) { }
+        applyOrientation(deck.layout?.orient ?: "landscape")
         link = Link(this, this)
         deck.myIp = link.wifiIp()
         link.start()
@@ -56,6 +58,16 @@ class MainActivity : Activity(), Link.Listener, DeckView.Callbacks {
             View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
         if (Build.VERSION.SDK_INT >= 19) flags = flags or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
         window.decorView.systemUiVisibility = flags
+    }
+
+    /** Landscape, portrait, or follow the tablet (still respecting its rotation lock). Set on the desktop. */
+    private fun applyOrientation(orient: String) {
+        val want = when (orient) {
+            "portrait" -> ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
+            "auto" -> ActivityInfo.SCREEN_ORIENTATION_FULL_USER
+            else -> ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+        }
+        if (requestedOrientation != want) requestedOrientation = want
     }
 
     private val power = object : BroadcastReceiver() {
@@ -87,6 +99,7 @@ class MainActivity : Activity(), Link.Listener, DeckView.Callbacks {
     override fun onDisconnected() {
         if (!deck.connected) return
         deck.connected = false
+        deck.pick = null
         if (deck.lastPeer == null) deck.lastPeer = prefs.getString("peer", null)
         deck.invalidate()
     }
@@ -100,6 +113,7 @@ class MainActivity : Activity(), Link.Listener, DeckView.Callbacks {
             "layout" -> {
                 val lay = Layout.parse(m)
                 deck.layout = lay
+                applyOrientation(lay.orient)
                 try { layoutFile.writeText(m.toString()) } catch (_: Exception) { }
                 requestIcons(lay.iconIds())
             }
@@ -124,6 +138,17 @@ class MainActivity : Activity(), Link.Listener, DeckView.Callbacks {
                 deck.status[m.optString("id")] = StatusValue(m.optStr("value"), m.optStr("sub"), if (m.has("bar")) m.optDouble("bar").takeIf { !it.isNaN() } else null, if (m.has("up")) m.optBoolean("up") else null)
                 deck.invalidate()
             }
+            "panel" -> {
+                val text = m.optString("text", "")
+                val lines = if (text.isEmpty()) emptyList() else text.split('\n').take(200)
+                deck.panels[m.optString("id")] = PanelValue(lines, if (m.has("up")) m.optBoolean("up") else null)
+                deck.invalidate()
+            }
+            "winpick" -> {
+                val pk = WinPick.parse(m)
+                requestIcons(pk.wins.mapNotNull { it.icon }.toSet())
+                deck.pick = pk
+            }
             "fb" -> {
                 val ok = m.optBoolean("ok")
                 val dur = if (m.optStr("line") != null) 8000L else if (ok) 2600L else 5000L
@@ -147,6 +172,9 @@ class MainActivity : Activity(), Link.Listener, DeckView.Callbacks {
         link.send(JSONObject().put("t", "sbtn").put("id", s.id))
         deck.sliders[s.id]?.let { deck.sliders[s.id] = SliderState(it.value, it.enabled, !it.muted); deck.holdIncoming[s.id] = SystemClock.uptimeMillis() + 600 }
         deck.invalidate()
+    }
+    override fun snap(key: String, win: String, mon: String, spot: String) {
+        link.send(JSONObject().put("t", "snap").put("key", key).put("win", win).put("mon", mon).put("spot", spot))
     }
     override fun pageChanged(id: String) { prefs.edit().putString("page", id).apply() }
     override fun pairApprove() { link.approvePairing() }

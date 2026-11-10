@@ -16,6 +16,9 @@ sealed class Actions
 
     public Actions(Audio audio, Media media) { _audio = audio; _media = media; }
 
+    /// A Window picker key was pressed: the hub sends the picker to the deck.
+    public event Action<JsonNode>? PickerRequested;
+
     static IList<ushort> Vks(JsonNode key) => Json.Arr(key, "keys").Select(k => (ushort)Json.D(k, "vk")).Where(v => v != 0).ToList();
 
     /// Called on touch-down (and for Test in the editor with down=true, up follows immediately).
@@ -64,7 +67,12 @@ sealed class Actions
                 case "url": return OpenUrl(Json.S(a, "url"));
                 case "script": return await Task.Run(() => RunScript(a));
                 case "ssh": return await Task.Run(() => RunSsh(a, config));
-                case "status": { var u = Json.S(a, "onTap"); return string.IsNullOrWhiteSpace(u) ? null : OpenUrl(u); }
+                case "status": case "panel": { var u = Json.S(a, "onTap"); return string.IsNullOrWhiteSpace(u) ? null : OpenUrl(u); }
+                case "terminal": return OpenTerminal(a, config);
+                case "termsend": return await WindowSnap.SendToTerminal(a);
+                case "snap": return await WindowSnap.RunSnap(a, config);
+                case "layout": return await WindowSnap.Restore(a);
+                case "winpick": PickerRequested?.Invoke(a); return new KeyResult(true, "Window picker sent to the deck");
                 case "nowplaying": await _media.TogglePlayPause(); return new KeyResult(true, "Play / pause");
                 default: return new KeyResult(true, "Navigation keys work on the deck");
             }
@@ -157,6 +165,27 @@ sealed class Actions
         if (store) Process.Start(new ProcessStartInfo("explorer.exe", raw) { UseShellExecute = true });
         else Process.Start(new ProcessStartInfo(exe!, args) { UseShellExecute = true, WorkingDirectory = Path.GetDirectoryName(exe) ?? "" });
         return new KeyResult(true, "Started " + label);
+    }
+
+    static bool HasWindowsTerminal() =>
+        File.Exists(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Microsoft", "WindowsApps", "wt.exe"));
+
+    static KeyResult OpenTerminal(JsonNode a, JsonNode config)
+    {
+        var label = Json.S(a, "label");
+        if (label.Length == 0) label = "Terminal";
+        var host = Json.S(a, "program") == "ssh" ? Json.Arr(config, "hosts").FirstOrDefault(h => Json.S(h, "id") == Json.S(a, "hostId")) : null;
+        TerminalCmd.Launch l;
+        try { l = TerminalCmd.Build(a, host, HasWindowsTerminal(), Paths.Expand(Json.S(a, "folder")), Json.S(a, "keyPath").Trim().Length > 0 ? Paths.Expand(Json.S(a, "keyPath")) : ""); }
+        catch (ArgumentException e) { return new KeyResult(false, e.Message, Badge: "setup", Toast: "⚠ " + label + " · " + Short(e.Message, 60)); }
+        if (l.WorkDir != null && !Directory.Exists(l.WorkDir)) return new KeyResult(false, "Folder not found: " + l.WorkDir, Badge: "no folder", Toast: "⚠ " + label + " · folder not found");
+        var psi = new ProcessStartInfo(l.Exe, l.Args) { UseShellExecute = true };
+        if (l.WorkDir != null) psi.WorkingDirectory = l.WorkDir;
+        if (l.Admin) psi.Verb = "runas";
+        try { Process.Start(psi); }
+        catch (System.ComponentModel.Win32Exception e) when (e.NativeErrorCode == 1223) { return new KeyResult(false, "The admin prompt was cancelled", Badge: "cancelled"); }
+        catch (System.ComponentModel.Win32Exception e) when (e.NativeErrorCode == 2) { return new KeyResult(false, l.Exe + " isn't installed", Badge: "missing", Toast: "⚠ " + label + " · " + l.Exe + " isn't installed"); }
+        return new KeyResult(true, "Opened " + label);
     }
 
     static string ShortcutTarget(string lnk)

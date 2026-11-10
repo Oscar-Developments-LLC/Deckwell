@@ -10,7 +10,8 @@ Start with **Getting started**. Then read the guide for whatever you want to bui
 | [How Deckwell works](how-it-works.md) | What runs where, how the two apps find each other, and where your files are |
 | [Keys](keys.md) | Every key type, icons and labels, and keys that do several things in one press |
 | [Pages, folders and sliders](pages-and-sliders.md) | Laying out your deck, moving between pages, and volume sliders |
-| [Status tiles](status-tiles.md) | Live values on your deck: this PC, commands, servers, and scripts that push updates |
+| [Status tiles and panels](status-tiles.md) | Live values on your deck: this PC, commands, servers, and scripts that push updates |
+| [Windows and terminals](windows-and-terminals.md) | Snap windows to spots and zones, saved window layouts, the deck's window picker, and terminal keys |
 | [Pairing and security](pairing-and-security.md) | What pairing protects, and what to be careful with |
 | [Troubleshooting](troubleshooting.md) | Fixes for the most common problems |
 

@@ -19,10 +19,11 @@ sealed class Hub : IDisposable
     {
         _toUi = toUi;
         Actions = new Actions(Audio, Media);
+        Actions.PickerRequested += key => Deck.Send(WindowSnap.PickerMessage(Json.S(key, "id"), Config));
         _config = LoadConfig();
         if (_config != null) Apply(_config);
         Feeds = new StatusFeeds(() => Config);
-        Feeds.Updated += (_, msg) => { _toUi("status", msg); Deck.Send(msg.DeepClone()); };
+        Feeds.Updated += (_, msg) => { _toUi(Json.S(msg, "t"), msg); Deck.Send(msg.DeepClone()); };
         Push = new PushServer(Paths.PushToken, Feeds.Push);
 
         Deck.StatusChanged += s => _toUi("device", s);
@@ -143,8 +144,8 @@ sealed class Hub : IDisposable
                 var o = new JsonObject
                 {
                     ["id"] = Json.S(k, "id"), ["row"] = (int)Json.D(k, "row"), ["col"] = (int)Json.D(k, "col"),
-                    ["span"] = type == "nowplaying" ? 2 : 1,
-                    ["kind"] = type == "nowplaying" ? "np" : type == "status" ? "status" : "key",
+                    ["span"] = type == "nowplaying" ? 2 : type == "panel" ? Math.Clamp((int)Json.D(k, "pw", 2), 1, 4) : 1,
+                    ["kind"] = type switch { "nowplaying" => "np", "status" => "status", "panel" => "panel", _ => "key" },
                     ["label"] = Json.S(k, "label"), ["labelPos"] = Json.S(k, "labelPos", "bottom"),
                 };
                 if (face?["glyph"] is JsonNode g && g.GetValueKind() == System.Text.Json.JsonValueKind.String) o["glyph"] = g.GetValue<string>();
@@ -164,6 +165,7 @@ sealed class Hub : IDisposable
                 }
                 if (type == "hotkey" && Json.S(k, "sendAs") == "hold") o["hold"] = true;
                 if (type == "status") { o["title"] = Json.S(k, "title", Json.S(k, "label")); o["show"] = Json.S(k, "show", "valuebar"); }
+                if (type == "panel") { o["title"] = Json.S(k, "title", Json.S(k, "label")); o["vspan"] = Math.Clamp((int)Json.D(k, "ph", 2), 1, 3); }
                 keys.Add(o);
             }
             var strip = new JsonArray();
@@ -181,9 +183,13 @@ sealed class Hub : IDisposable
                 ["id"] = Json.S(p, "id"), ["name"] = Json.S(p, "name"), ["parent"] = p["parentId"]?.GetValue<string>(),
                 ["cols"] = (int)Json.D(p, "cols", 5), ["rows"] = (int)Json.D(p, "rows", 3), ["keys"] = keys, ["strip"] = strip,
                 ["side"] = side == "left" ? "left" : "right",
+                ["porder"] = Json.S(p, "porder") == "mirror" ? "mirror" : "reading",
+                ["pside"] = Json.S(p, "pside") == "top" ? "top" : "bottom",
+                ["backRow"] = (int)Json.D(p["back"], "row", 0), ["backCol"] = (int)Json.D(p["back"], "col", 0),
             });
         }
-        var ok = Deck.Send(new JsonObject { ["t"] = "layout", ["pages"] = pages });
+        var orient = Json.S(cfg, "orient", "landscape") switch { "portrait" => "portrait", "auto" => "auto", _ => "landscape" };
+        var ok = Deck.Send(new JsonObject { ["t"] = "layout", ["orient"] = orient, ["pages"] = pages });
         _toUi("synced", new { deck = ok });
     }
 
@@ -208,6 +214,17 @@ sealed class Hub : IDisposable
                 break;
             }
             case "up": { var k = FindKey(Json.S(m, "key")); if (k != null) Actions.Release(k); break; }
+            case "snap":
+            {
+                var key = FindKey(Json.S(m, "key"));
+                string win = Json.S(m, "win"), mon = Json.S(m, "mon"), spot = Json.S(m, "spot");
+                _ = Task.Run(() =>
+                {
+                    var r = WindowSnap.PickerSnap(win, mon, spot, Config);
+                    Deck.Send(new JsonObject { ["t"] = "fb", ["key"] = key == null ? "" : Json.S(key, "id"), ["ok"] = r.Ok, ["ring"] = r.Ok, ["badge"] = r.Badge, ["toast"] = r.Toast });
+                });
+                break;
+            }
             case "set": Audio.Set(Json.S(m, "id"), Json.D(m, "value")); break;
             case "sbtn": Audio.ToggleMute(Json.S(m, "id")); break;
             case "need":
@@ -224,7 +241,7 @@ sealed class Hub : IDisposable
     public void Feedback(JsonNode key, KeyResult r)
     {
         var type = Json.S(key, "type");
-        if (type is "ssh" or "script" || !r.Ok)
+        if (type is "ssh" or "script" or "layout" || !r.Ok)
             Deck.Send(new JsonObject { ["t"] = "fb", ["key"] = Json.S(key, "id"), ["ok"] = r.Ok, ["ring"] = r.Ring, ["badge"] = r.Badge, ["line"] = r.Line, ["toast"] = r.Toast });
         if (r.LastRun != null || type is "ssh" or "script")
             _toUi("keyResult", new { id = Json.S(key, "id"), ok = r.Ok, text = r.Text, lastRun = r.LastRun });

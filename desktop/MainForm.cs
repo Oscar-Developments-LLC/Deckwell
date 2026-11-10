@@ -211,6 +211,27 @@ sealed class MainForm : Form
         catch (Exception ex) { Log.Write($"cmd {cmd}: {ex}"); Reply(id, null, ex.Message); }
     }
 
+    /// Profile names from Windows Terminal's settings, for the Open terminal key. Empty if it isn't installed.
+    static List<string> WtProfiles()
+    {
+        var names = new List<string>();
+        var local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        foreach (var pkg in new[] { "Microsoft.WindowsTerminal_8wekyb3d8bbwe", "Microsoft.WindowsTerminalPreview_8wekyb3d8bbwe" })
+        {
+            var f = Path.Combine(local, "Packages", pkg, "LocalState", "settings.json");
+            if (!File.Exists(f)) continue;
+            try
+            {
+                var doc = JsonNode.Parse(File.ReadAllText(f), documentOptions: new JsonDocumentOptions { CommentHandling = JsonCommentHandling.Skip, AllowTrailingCommas = true });
+                var list = doc?["profiles"] is JsonArray arr ? arr : doc?["profiles"]?["list"] as JsonArray;
+                foreach (var p in list ?? new JsonArray())
+                    if (p?["hidden"]?.GetValueKind() != JsonValueKind.True && Json.S(p, "name") is { Length: > 0 } n && !names.Contains(n)) names.Add(n);
+            }
+            catch (Exception e) { Log.Write("wt profiles: " + e.Message); }
+        }
+        return names;
+    }
+
     async Task<object?> HandleCommand(string cmd, JsonNode? a)
     {
         switch (cmd)
@@ -219,7 +240,7 @@ sealed class MainForm : Form
                 PostEvent("maximized", WindowState == FormWindowState.Maximized); // editor may have just woken up
                 PostEvent("np", _hub.NpForUi(_hub.Media.Current));
                 PostEvent("sliders", _hub.SlidersSnapshot());
-                foreach (var st in _hub.Feeds.Snapshot()) PostEvent("status", st);
+                foreach (var st in _hub.Feeds.Snapshot()) PostEvent(Json.S(st, "t"), st);
                 return new { config = _hub.Config, device = _hub.Deck.Current, sessions = _hub.Audio.Sessions.Select(s => new { name = s.Name, label = s.Label }) };
             case "saveConfig":
             {
@@ -237,6 +258,14 @@ sealed class MainForm : Form
                 };
                 return dlg.ShowDialog(this) == DialogResult.OK ? dlg.FileName : null;
             }
+            case "pickFolder":
+            {
+                using var dlg = new FolderBrowserDialog { UseDescriptionForTitle = true, Description = "Start folder", ShowNewFolderButton = false };
+                return dlg.ShowDialog(this) == DialogResult.OK ? dlg.SelectedPath : null;
+            }
+            case "getMonitors": return WindowSnap.MonitorsForUi();
+            case "captureLayout": return await Task.Run(WindowSnap.Capture);
+            case "wtProfiles": return await Task.Run(WtProfiles);
             case "iconFromExe": { var p = Json.S(a, "path"); var idv = await Task.Run(() => Icons.FromExe(p)); return new { id = idv }; }
             case "uploadImage":
             {

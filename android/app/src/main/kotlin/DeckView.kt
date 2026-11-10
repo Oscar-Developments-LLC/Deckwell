@@ -18,6 +18,7 @@ import kotlin.math.roundToInt
 
 /**
  * Draws the whole deck in a 1920x1200 design space (the Kindle Fire HDX 7" panel it was first built for), scaled to fit.
+ * In portrait the design space is 1200x1920 and each page uses its portrait grid (see Portrait).
  * Geometry matches the desktop editor's geom() so what you build is what you get.
  */
 @SuppressLint("ViewConstructor")
@@ -30,14 +31,18 @@ class DeckView(ctx: Context, private val res: Res, private val cb: Callbacks) : 
         fun pageChanged(id: String)
         fun pairApprove()
         fun pairCancel()
+        /** The user picked a window and a spot in the window picker. */
+        fun snap(key: String, win: String, mon: String, spot: String) {}
     }
 
     companion object {
-        const val W = 1920f; const val H = 1200f; const val PAD = 37f; const val TOP = 132f; const val BOTTOM = 178f; const val GAP = 28f
+        const val PAD = 37f; const val TOP = 132f; const val BOTTOM = 178f; const val GAP = 28f
         const val STRIP_GAP = 60f; const val SLIDER_GAP = 50f
         /** Width of a slider strip with n sliders (3 sliders = 376, the original fixed strip). */
         fun stripW(n: Int) = n * SBTN + (n - 1).coerceAtLeast(0) * SLIDER_GAP
         const val TRACK_TOP = 232f; const val TRACK_BOTTOM = 994f; const val SBTN_TOP = 1010f; const val SBTN = 92f
+        /** Portrait slider rows: label column width, and the gap between the track and the button. */
+        const val PLABEL = 150f; const val PTRACK_GAP = 40f
         val ACCENT = Color.parseColor("#8f84e6"); val ACCENT2 = Color.parseColor("#b9b1f2")
         val TEXT = Color.parseColor("#e8e7f0"); val TEXT2 = Color.parseColor("#a4a6b5"); val TEXT3 = Color.parseColor("#8d8fa0")
         val DANGER = Color.parseColor("#e27f8c")
@@ -45,7 +50,7 @@ class DeckView(ctx: Context, private val res: Res, private val cb: Callbacks) : 
 
     /* ---------------- state ---------------- */
     var layout: Layout? = null
-        set(v) { field = v; if (v != null && v.page(pageId) == null) pageId = v.roots.firstOrNull()?.id; invalidate() }
+        set(v) { field = v; effCache.clear(); if (v != null && v.page(pageId) == null) pageId = v.roots.firstOrNull()?.id; invalidate() }
     var pageId: String? = null
     var connected = false
     var link = "wifi"
@@ -58,14 +63,33 @@ class DeckView(ctx: Context, private val res: Res, private val cb: Callbacks) : 
     val status = HashMap<String, StatusValue>()
     val feedback = HashMap<String, Feedback>()
     var toast: Toast? = null
+    val panels = HashMap<String, PanelValue>()
+    /** Non-null while the window picker is open. */
+    var pick: WinPick? = null
+        set(v) { field = v; pickDown = false; invalidate() }
     /** Non-null while a computer is pairing with this deck. */
     var pair: Link.PairPrompt? = null
         set(v) { field = v; pairDown = 0; invalidate() }
 
     /* ---------------- transform ---------------- */
+    /** Design space: 1920x1200 in landscape, 1200x1920 in portrait. */
+    var W = 1920f; private set
+    var H = 1200f; private set
+    val portrait get() = H > W
     private var sc = 1f; private var ox = 0f; private var oy = 0f
     override fun onSizeChanged(w: Int, h: Int, ow: Int, oh: Int) {
+        val port = h > w
+        if (port != portrait) { effCache.clear(); anim?.cancel(); pageOffset = 0f; swiping = false; bgShader = null }
+        W = if (port) 1200f else 1920f; H = if (port) 1920f else 1200f
         sc = min(w / W, h / H); ox = (w - W * sc) / 2f; oy = (h - H * sc) / 2f
+    }
+
+    /** Screens drawn in the landscape design (pairing, offline) are shrunk to fit the width in portrait. */
+    private val cardK get() = if (portrait) W / 1920f else 1f
+    private val cardY get() = if (portrait) (H - 1200f * cardK) / 2f else 0f
+    private inline fun card(c: Canvas, body: () -> Unit) {
+        c.save(); if (portrait) { c.translate(0f, cardY); c.scale(cardK, cardK) }
+        body(); c.restore()
     }
 
     /* ---------------- paints ---------------- */
@@ -75,22 +99,42 @@ class DeckView(ctx: Context, private val res: Res, private val cb: Callbacks) : 
     private val rf = RectF()
     private val path = Path()
     private val clockFmt = SimpleDateFormat("HH:mm", Locale.US)
-    private val bgShader by lazy { LinearGradient(0f, 0f, W * 0.3f, H, Color.parseColor("#1e2030"), Color.parseColor("#141624"), Shader.TileMode.CLAMP) }
+    private var bgShader: Shader? = null
+    private fun bg(): Shader = bgShader ?: LinearGradient(0f, 0f, W * 0.3f, H, Color.parseColor("#1e2030"), Color.parseColor("#141624"), Shader.TileMode.CLAMP).also { bgShader = it }
     private val keyShaders = HashMap<Int, Shader>()
     private fun keyShader(h: Float) = keyShaders.getOrPut(h.roundToInt()) { LinearGradient(0f, 0f, 0f, h, Color.parseColor("#232533"), Color.parseColor("#1f212e"), Shader.TileMode.CLAMP) }
 
-    private data class Geom(val w: Float, val h: Float, val availW: Float, val gridH: Float, val x0: Float)
-    private fun geom(pg: DPage): Geom {
+    /** The grid a page shows right now: its own in landscape, its portrait grid in portrait. Spans are clamped to the grid. */
+    private class Eff(val cols: Int, val rows: Int, val keys: List<DKey>)
+    private val effCache = HashMap<String, Eff>()
+    private fun eff(lay: Layout, pg: DPage): Eff = effCache.getOrPut(pg.id) {
+        val keys = lay.keysOf(pg)
+        if (portrait) { val g = Portrait.of(keys, pg.cols, pg.rows, pg.portraitOrder); Eff(g.cols, g.rows, g.keys) }
+        else Eff(pg.cols, pg.rows, keys.map { k ->
+            val w = min(k.span, pg.cols - k.col); val h = min(k.vspan, pg.rows - k.row)
+            if (w == k.span && h == k.vspan) k else k.at(k.row, k.col, w, h)
+        })
+    }
+
+    private data class Geom(val w: Float, val h: Float, val gridH: Float, val x0: Float, val y0: Float)
+    private fun geom(pg: DPage, e: Eff): Geom {
         val sw = if (pg.hasStrip) stripW(pg.strip.size) + STRIP_GAP else 0f
+        if (portrait) {
+            val availW = W - 2 * PAD
+            val availH = H - TOP - BOTTOM - sw
+            val w = (availW - (e.cols - 1) * GAP) / e.cols
+            val h = min((availH - (e.rows - 1) * GAP) / e.rows, w)
+            return Geom(w, h, e.rows * h + (e.rows - 1) * GAP, PAD, TOP + if (pg.stripTop) sw else 0f)
+        }
         val availW = W - 2 * PAD - sw
         val availH = H - TOP - BOTTOM
-        val w = (availW - (pg.cols - 1) * GAP) / pg.cols
-        val h = min((availH - (pg.rows - 1) * GAP) / pg.rows, w)
-        return Geom(w, h, availW, pg.rows * h + (pg.rows - 1) * GAP, PAD + if (pg.stripLeft) sw else 0f)
+        val w = (availW - (e.cols - 1) * GAP) / e.cols
+        val h = min((availH - (e.rows - 1) * GAP) / e.rows, w)
+        return Geom(w, h, e.rows * h + (e.rows - 1) * GAP, PAD + if (pg.stripLeft) sw else 0f, TOP)
     }
-    private fun keyRect(g: Geom, row: Int, col: Int, span: Int, dx: Float, out: RectF) {
-        val l = g.x0 + col * (g.w + GAP) + dx; val t = TOP + row * (g.h + GAP)
-        out.set(l, t, l + span * g.w + (span - 1) * GAP, t + g.h)
+    private fun keyRect(g: Geom, row: Int, col: Int, span: Int, vspan: Int, dx: Float, out: RectF) {
+        val l = g.x0 + col * (g.w + GAP) + dx; val t = g.y0 + row * (g.h + GAP)
+        out.set(l, t, l + span * g.w + (span - 1) * GAP, t + vspan * g.h + (vspan - 1) * GAP)
     }
 
     /* ---------------- drawing helpers ---------------- */
@@ -135,21 +179,23 @@ class DeckView(ctx: Context, private val res: Res, private val cb: Callbacks) : 
     override fun onDraw(c: Canvas) {
         c.drawColor(Color.parseColor("#111320"))
         c.save(); c.translate(ox, oy); c.scale(sc, sc)
-        p.color = Color.WHITE; p.shader = bgShader; c.drawRect(0f, 0f, W, H, p); p.shader = null
+        p.color = Color.WHITE; p.shader = bg(); c.drawRect(0f, 0f, W, H, p); p.shader = null
         val lay = layout; val pg = lay?.page(pageId)
         val pr = pair
         if (pr != null) {
-            drawPairing(c, pr)
+            card(c) { drawPairing(c, pr) }
             c.restore(); postInvalidateDelayed(60); return
         }
         if (!connected) {
-            drawDisconnected(c)
+            card(c) { drawDisconnected(c) }
             c.restore(); postInvalidateDelayed(60); return
         }
         if (lay == null || pg == null) {
-            drawWaiting(c, lay)
+            card(c) { drawWaiting(c, lay) }
             c.restore(); postInvalidateDelayed(500); return
         }
+        val pk = pick
+        if (pk != null) { drawPick(c, pk); c.restore(); scheduleRedraw(); return }
         drawTopBar(c, lay, pg)
         c.save(); c.clipRect(0f, TOP - 24f, W, H)
         drawPage(c, lay, pg, pageOffset)
@@ -175,7 +221,8 @@ class DeckView(ctx: Context, private val res: Res, private val cb: Callbacks) : 
         val parent = lay.page(pg.parent)
         if (parent == null) {
             text(c, pg.name, PAD, base, 34f, res.semibold, TEXT)
-            text(c, "${pg.cols} × ${pg.rows}", PAD + width(pg.name, 34f, res.semibold) + 22f, base, 26f, res.regular, Color.parseColor("#8f91a3"))
+            val e = eff(lay, pg)
+            text(c, "${e.cols} × ${e.rows}", PAD + width(pg.name, 34f, res.semibold) + 22f, base, 26f, res.regular, Color.parseColor("#8f91a3"))
         } else {
             text(c, parent.name, PAD, base, 32f, res.regular, Color.parseColor("#8f91a3"))
             val x = PAD + width(parent.name, 32f, res.regular) + 22f
@@ -198,7 +245,7 @@ class DeckView(ctx: Context, private val res: Res, private val cb: Callbacks) : 
         text(c, label, xr - pw + 52f, 73f, 26f, res.regular, Color.parseColor("#d6d7e0"))
         xr -= pw + 22f
         if (t != null) {
-            val maxW = xr - 520f
+            val maxW = xr - if (portrait) 300f else 520f
             val msg = fit(t.text, 24f, res.mono, maxW - 90f)
             val tw = 22f + 26f + 16f + width(msg, 24f, res.mono) + 24f
             round(c, xr - tw, 36f, xr, 92f, 12f, Color.parseColor(if (t.ok) "#23213d" else "#2b1f2b"))
@@ -210,19 +257,19 @@ class DeckView(ctx: Context, private val res: Res, private val cb: Callbacks) : 
 
     /* ---------------- page ---------------- */
     private fun drawPage(c: Canvas, lay: Layout, pg: DPage, dx: Float) {
-        val g = geom(pg)
-        val keys = lay.keysOf(pg)
+        val e = eff(lay, pg)
+        val g = geom(pg, e)
         val occ = HashSet<Int>()
-        for (k in keys) for (i in 0 until min(k.span, pg.cols - k.col)) occ.add(k.row * 16 + k.col + i)
-        for (r in 0 until pg.rows) for (col in 0 until pg.cols) if (!occ.contains(r * 16 + col)) {
-            keyRect(g, r, col, 1, dx, rf)
+        for (k in e.keys) for (y in 0 until k.vspan) for (i in 0 until k.span) occ.add((k.row + y) * 16 + k.col + i)
+        for (r in 0 until e.rows) for (col in 0 until e.cols) if (!occ.contains(r * 16 + col)) {
+            keyRect(g, r, col, 1, 1, dx, rf)
             stroke(c, rf.left + 1f, rf.top + 1f, rf.right - 1f, rf.bottom - 1f, 24f, Color.parseColor("#25273a"), 2f)
         }
-        for (k in keys) {
-            keyRect(g, k.row, k.col, min(k.span, pg.cols - k.col), dx, rf)
+        for (k in e.keys) {
+            keyRect(g, k.row, k.col, k.span, k.vspan, dx, rf)
             drawKey(c, k, RectF(rf), lay.page(pg.parent) != null)
         }
-        if (pg.hasStrip) drawStrip(c, pg, dx)
+        if (pg.hasStrip) { if (portrait) drawStripH(c, pg, dx) else drawStrip(c, pg, dx) }
     }
 
     private fun drawKey(c: Canvas, k: DKey, r: RectF, inFolder: Boolean) {
@@ -246,6 +293,7 @@ class DeckView(ctx: Context, private val res: Res, private val cb: Callbacks) : 
         when (k.kind) {
             "np" -> drawNp(c, r)
             "status" -> drawStatus(c, k, r)
+            "panel" -> drawPanel(c, k, r)
             else -> drawStd(c, k, r, inFolder, fb)
         }
         if (fb != null && fb.ring) {
@@ -323,6 +371,51 @@ class DeckView(ctx: Context, private val res: Res, private val cb: Callbacks) : 
                 val f = (v?.bar ?: 0.0).coerceIn(0.0, 1.0).toFloat()
                 if (f > 0) round(c, x, by, x + (r.right - 26f - x) * f, by + 6f, 3f, ACCENT)
             }
+        }
+    }
+
+    /** Scroll position of each panel, in design units. */
+    private val panelScroll = HashMap<String, Float>()
+    private val panelMax = HashMap<String, Float>()
+    private val PANEL_TOP = 84f
+    /** Panel text grows to fill the panel: never below 21, at most 64. Line height is 30/21 of the size. */
+    private val PANEL_MIN = 21f; private val PANEL_MAX = 64f; private val PANEL_LH = 30f / 21f
+    private val monoAdvance by lazy { p.typeface = res.mono; p.textSize = 100f; p.measureText("0") / 100f }
+    /** Same rule as fitPanel() in the editor (desktop/ui/app.js). */
+    private fun panelSize(lines: List<String>, w: Float, h: Float): Float {
+        val longest = lines.maxOfOrNull { it.length } ?: 1
+        val byW = w / (longest.coerceAtLeast(1) * monoAdvance)
+        val byH = h / (lines.size.coerceAtLeast(1) * PANEL_LH)
+        return min(byW, byH).coerceIn(PANEL_MIN, PANEL_MAX)
+    }
+
+    private fun drawPanel(c: Canvas, k: DKey, r: RectF) {
+        val v = panels[k.id]
+        val x = r.left + 26f; val maxW = r.width() - 52f
+        val dot = if (v?.up != null) 30f else 0f
+        text(c, fit(k.title ?: k.label, 24f, res.regular, maxW - dot), x, r.top + 48f, 24f, res.regular, Color.parseColor("#b4b6c4"))
+        v?.up?.let { up -> p.color = if (up) Color.parseColor("#5fcf8f") else DANGER; c.drawCircle(r.right - 36f, r.top + 40f, 9f, p) }
+        val lines = v?.lines ?: emptyList()
+        val top = r.top + PANEL_TOP; val bottom = r.bottom - 18f
+        val viewH = bottom - top
+        val fs = panelSize(lines, maxW - 8f, viewH)
+        val lh = fs * PANEL_LH
+        val maxScroll = max(0f, lines.size * lh - viewH).let { if (it < 2f) 0f else it } // fitted text can land a hair over
+        panelMax[k.id] = maxScroll
+        val off = (panelScroll[k.id] ?: 0f).coerceIn(0f, maxScroll)
+        if (lines.isEmpty()) { text(c, "—", x, top + 24f, 22f, res.mono, TEXT3); return }
+        c.save(); c.clipRect(r.left + 12f, top - 4f, r.right - 12f, bottom)
+        val first = (off / lh).toInt().coerceAtLeast(0)
+        val last = min(lines.size - 1, ((off + viewH) / lh).toInt() + 1)
+        for (i in first..last) {
+            val y = top + i * lh - off + fs * 1.05f
+            text(c, fit(lines[i], fs, res.mono, maxW - 8f), x, y, fs, res.mono, Color.parseColor("#d7d8e2"))
+        }
+        c.restore()
+        if (maxScroll > 0f) {
+            val trackH = viewH; val thumbH = max(36f, trackH * viewH / (viewH + maxScroll))
+            val ty = top + (trackH - thumbH) * (off / maxScroll)
+            round(c, r.right - 16f, ty, r.right - 11f, ty + thumbH, 2.5f, Color.argb(110, 185, 177, 242))
         }
     }
 
@@ -404,9 +497,54 @@ class DeckView(ctx: Context, private val res: Res, private val cb: Callbacks) : 
         }
     }
 
+    /* ---------------- sliders in portrait: one row each, stacked at the top or bottom ---------------- */
+    private fun stripY(pg: DPage, i: Int): Float {
+        val top = if (pg.stripTop) TOP else H - BOTTOM - stripW(pg.strip.size)
+        return top + i * (SBTN + SLIDER_GAP)
+    }
+    private fun trackX0() = PAD + PLABEL + 20f
+    private fun trackX1(s: DSlider) = W - PAD - if (s.button != "none") SBTN + PTRACK_GAP else 20f
+
+    private fun drawStripH(c: Canvas, pg: DPage, dx: Float) {
+        pg.strip.forEachIndexed { i, s ->
+            if (s == null) return@forEachIndexed
+            val y = stripY(pg, i); val cy = y + SBTN / 2f
+            val st = sliders[s.id]
+            val enabled = st?.enabled ?: true
+            val v = (if (dragSlider?.id == s.id) dragValue else st?.value ?: 0).coerceIn(0, 100)
+            text(c, fit(s.label, 22f, res.regular, PLABEL), PAD + dx, cy - 6f, 22f, res.regular, if (enabled) Color.parseColor("#a7a9b8") else TEXT3)
+            text(c, if (enabled) "$v" else "—", PAD + dx, cy + 30f, 26f, res.semibold, if (enabled) TEXT else TEXT3)
+            val x0 = trackX0() + dx; val x1 = trackX1(s) + dx
+            round(c, x0, cy - 6f, x1, cy + 6f, 6f, Color.parseColor("#3b3d4c"))
+            val fx = x0 + (x1 - x0) * v / 100f
+            if (enabled) {
+                for ((w, a) in listOf(30f to 14, 20f to 26)) round(c, x0 - (w - 12) / 2, cy - w / 2, fx, cy + w / 2, w / 2, Color.argb(a, 143, 132, 230))
+                p.color = Color.WHITE; p.shader = LinearGradient(x0, 0f, x1, 0f, Color.parseColor("#6c5fbd"), Color.parseColor("#9489e8"), Shader.TileMode.CLAMP)
+                rf.set(x0, cy - 6f, fx, cy + 6f); c.drawRoundRect(rf, 6f, 6f, p); p.shader = null
+            } else round(c, x0, cy - 6f, fx, cy + 6f, 6f, Color.parseColor("#4a4c5a"))
+            // thumb (upright)
+            round(c, fx - 14f, cy - 42f, fx + 26f, cy + 42f, 12f, Color.argb(70, 0, 0, 0))
+            p.color = Color.WHITE; p.shader = LinearGradient(fx - 18f, 0f, fx + 18f, 0f, if (enabled) Color.parseColor("#dcdfe9") else Color.parseColor("#777a88"), if (enabled) Color.parseColor("#a8acbf") else Color.parseColor("#5d606e"), Shader.TileMode.CLAMP)
+            rf.set(fx - 18f, cy - 40f, fx + 18f, cy + 40f); c.drawRoundRect(rf, 10f, 10f, p); p.shader = null
+            if (s.button != "none") {
+                val bx = W - PAD - SBTN + dx
+                val pressedBtn = pressedSliderBtn?.id == s.id
+                p.color = Color.WHITE; p.shader = keyShader(SBTN); c.save(); c.translate(bx, y)
+                if (pressedBtn) c.scale(0.95f, 0.95f, SBTN / 2, SBTN / 2)
+                rf.set(0f, 0f, SBTN, SBTN); c.drawRoundRect(rf, 18f, 18f, p); p.shader = null
+                stroke(c, 1f, 1f, SBTN - 1f, SBTN - 1f, 17f, Color.parseColor("#2c2e3d"), 2f)
+                c.restore()
+                val muted = st?.muted == true
+                val g = when { s.control == "mic" -> if (muted) "mic-off" else "mic"; muted -> "volume-x"; s.control == "master" -> "volume-2"; else -> "volume-1" }
+                glyph(c, g, bx + SBTN / 2, y + SBTN / 2, 38f, if (muted) DANGER else Color.parseColor("#d9d9e3"))
+            }
+        }
+    }
+
     /* ---------------- dots ---------------- */
     private fun drawDots(c: Canvas, lay: Layout, pg: DPage) {
-        val y = if (pg.hasStrip) 1136f else min(1136f, TOP + geom(pg).gridH + 52f)
+        val bottomY = H - 64f
+        val y = if (pg.hasStrip && !(portrait && pg.stripTop)) bottomY else { val g = geom(pg, eff(lay, pg)); min(bottomY, g.y0 + g.gridH + 52f) }
         if (lay.page(pg.parent) != null) { round(c, W / 2 - 14f, y - 3f, W / 2 + 14f, y + 3f, 3f, ACCENT); return }
         val n = lay.roots.size; if (n < 2) return
         val idx = lay.roots.indexOfFirst { it.id == pg.id }
@@ -472,8 +610,9 @@ class DeckView(ctx: Context, private val res: Res, private val cb: Callbacks) : 
         }
     }
 
-    private fun pairTouch(e: MotionEvent, x: Float, y: Float): Boolean {
+    private fun pairTouch(e: MotionEvent, sx: Float, sy: Float): Boolean {
         val pr = pair ?: return false
+        val x = sx / cardK; val y = (sy - cardY) / cardK
         val canPair = pr.code != null && !pr.approved
         when (e.actionMasked) {
             MotionEvent.ACTION_DOWN -> { pairDown = if (cancelBtn.contains(x, y)) 1 else if (canPair && pairBtn.contains(x, y)) 2 else 0; invalidate() }
@@ -509,6 +648,7 @@ class DeckView(ctx: Context, private val res: Res, private val cb: Callbacks) : 
     private var pageOffset = 0f
     private var anim: ValueAnimator? = null
     private var velX = 0f; private var lastMoveX = 0f; private var lastMoveT = 0L
+    private var scrollPanel: DKey? = null; private var scrollStart = 0f
 
     private fun neighbor(lay: Layout, pg: DPage, dir: Int): DPage? {
         if (lay.page(pg.parent) != null) return null
@@ -517,13 +657,22 @@ class DeckView(ctx: Context, private val res: Res, private val cb: Callbacks) : 
     }
 
     private fun hitKey(lay: Layout, pg: DPage, x: Float, y: Float): Pair<DKey, RectF>? {
-        val g = geom(pg); val r = RectF()
-        for (k in lay.keysOf(pg)) { keyRect(g, k.row, k.col, min(k.span, pg.cols - k.col), 0f, r); if (r.contains(x, y)) return k to r }
+        val e = eff(lay, pg); val g = geom(pg, e); val r = RectF()
+        for (k in e.keys) { keyRect(g, k.row, k.col, k.span, k.vspan, 0f, r); if (r.contains(x, y)) return k to r }
         return null
     }
 
     private fun sliderAt(pg: DPage, x: Float, y: Float, button: Boolean): DSlider? {
         if (!pg.hasStrip) return null
+        if (portrait) {
+            pg.strip.forEachIndexed { i, s ->
+                if (s == null) return@forEachIndexed
+                val top = stripY(pg, i)
+                if (button) { if (s.button != "none" && x in W - PAD - SBTN - 8..W - PAD + 8 && y in top - 8..top + SBTN + 8) return s }
+                else if (y in top - 14f..top + SBTN + 14f && x in PAD..(trackX1(s) + 10f)) return s
+            }
+            return null
+        }
         pg.strip.forEachIndexed { i, s ->
             if (s == null) return@forEachIndexed
             val cx = stripX(pg, i, 0f)
@@ -533,8 +682,8 @@ class DeckView(ctx: Context, private val res: Res, private val cb: Callbacks) : 
         return null
     }
 
-    private fun sliderValue(s: DSlider, y: Float): Int {
-        val raw = ((TRACK_BOTTOM - y) / (TRACK_BOTTOM - TRACK_TOP) * 100f).coerceIn(0f, 100f)
+    private fun sliderValue(s: DSlider, x: Float, y: Float): Int {
+        val raw = (if (portrait) (x - trackX0()) / (trackX1(s) - trackX0()) * 100f else (TRACK_BOTTOM - y) / (TRACK_BOTTOM - TRACK_TOP) * 100f).coerceIn(0f, 100f)
         val step = s.step.coerceIn(1.0, 25.0)
         return ((raw / step).roundToInt() * step).roundToInt().coerceIn(0, 100)
     }
@@ -545,27 +694,35 @@ class DeckView(ctx: Context, private val res: Res, private val cb: Callbacks) : 
         if (pairTouch(e, x, y)) return true
         val lay = layout; val pg = lay?.page(pageId)
         if (!connected || lay == null || pg == null) return true
+        if (pickTouch(e, x, y)) return true
         when (e.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 anim?.cancel(); if (pageOffset != 0f) settle(lay, pg)
                 downX = x; downY = y; swiping = false; lastMoveX = x; lastMoveT = e.eventTime; velX = 0f
                 sliderAt(pg, x, y, button = true)?.let { pressedSliderBtn = it; invalidate(); return true }
                 sliderAt(pg, x, y, button = false)?.let { s ->
-                    dragSlider = s; dragValue = sliderValue(s, y); cb.slider(s, dragValue); lastSliderSend = e.eventTime; invalidate(); return true
+                    dragSlider = s; dragValue = sliderValue(s, x, y); cb.slider(s, dragValue); lastSliderSend = e.eventTime; invalidate(); return true
                 }
                 hitKey(lay, pg, x, y)?.let { (k, r) ->
-                    pressedKey = k; pressedRect.set(r); holdSent = false
+                    pressedKey = k; pressedRect.set(r); holdSent = false; scrollPanel = null
                     if (k.hold) { cb.press(k); holdSent = true }
                     invalidate()
                 }
             }
             MotionEvent.ACTION_MOVE -> {
                 dragSlider?.let { s ->
-                    val v = sliderValue(s, y)
+                    val v = sliderValue(s, x, y)
                     if (v != dragValue) { dragValue = v; invalidate(); if (e.eventTime - lastSliderSend > 40) { cb.slider(s, v); lastSliderSend = e.eventTime } }
                     return true
                 }
+                scrollPanel?.let { k ->
+                    panelScroll[k.id] = (scrollStart - (y - downY)).coerceIn(0f, panelMax[k.id] ?: 0f); invalidate(); return true
+                }
                 val dx = x - downX
+                val pk = pressedKey
+                if (!swiping && pk != null && pk.kind == "panel" && (panelMax[pk.id] ?: 0f) > 0f && abs(y - downY) > 24f && abs(y - downY) > abs(dx)) {
+                    scrollPanel = pk; scrollStart = panelScroll[pk.id] ?: 0f; pressedKey = null; invalidate(); return true
+                }
                 if (!swiping && abs(dx) > 34f && abs(dx) > abs(y - downY) * 1.2f && lay.page(pg.parent) == null && lay.roots.size > 1) {
                     swiping = true
                     pressedKey?.let { if (holdSent) cb.release(it) }; pressedKey = null; pressedSliderBtn = null
@@ -583,6 +740,7 @@ class DeckView(ctx: Context, private val res: Res, private val cb: Callbacks) : 
             MotionEvent.ACTION_UP -> {
                 dragSlider?.let { s -> cb.slider(s, dragValue); sliders[s.id] = SliderState(dragValue, sliders[s.id]?.enabled ?: true, sliders[s.id]?.muted ?: false); dragSlider = null; holdIncoming[s.id] = e.eventTime + 900; invalidate(); return true }
                 pressedSliderBtn?.let { s -> if (sliderAt(pg, x, y, button = true)?.id == s.id) cb.sliderButton(s); pressedSliderBtn = null; invalidate(); return true }
+                if (scrollPanel != null) { scrollPanel = null; return true }
                 if (swiping) { finishSwipe(lay, pg); return true }
                 val k = pressedKey; pressedKey = null
                 if (k != null) {
@@ -592,7 +750,7 @@ class DeckView(ctx: Context, private val res: Res, private val cb: Callbacks) : 
                 invalidate()
             }
             MotionEvent.ACTION_CANCEL -> {
-                pressedKey?.let { if (holdSent) cb.release(it) }; pressedKey = null; pressedSliderBtn = null; dragSlider = null
+                pressedKey?.let { if (holdSent) cb.release(it) }; pressedKey = null; pressedSliderBtn = null; dragSlider = null; scrollPanel = null
                 if (swiping) finishSwipe(lay, pg)
                 invalidate()
             }
@@ -636,5 +794,137 @@ class DeckView(ctx: Context, private val res: Res, private val cb: Callbacks) : 
 
     private fun settle(lay: Layout, pg: DPage) {
         pageOffset = 0f
+    }
+
+    /* ---------------- window picker (a Window picker key opens it; see docs/PROTOCOL.md) ---------------- */
+    private class Hit(val r: RectF, val act: String, val arg: Int = 0)
+    private val pickHits = ArrayList<Hit>()
+    private var pickMax = 0f
+    private var pickDown = false; private var pickMoved = false; private var pickStart = 0f
+
+    /** A bottom-bar button, 64 tall, anchored at x (its right edge when right = true). */
+    private fun pill(c: Canvas, label: String, x: Float, top: Float, act: String, right: Boolean) {
+        val w = max(180f, width(label, 28f, res.medium) + 72f)
+        val r = if (right) RectF(x - w, top, x, top + 64f) else RectF(x, top, x + w, top + 64f)
+        round(c, r.left, r.top, r.right, r.bottom, 32f, Color.parseColor("#2a2c3b"))
+        stroke(c, r.left, r.top, r.right, r.bottom, 32f, Color.parseColor("#3a3c4e"), 2f)
+        text(c, label, r.centerX(), r.top + 42f, 28f, res.medium, TEXT, Paint.Align.CENTER)
+        pickHits.add(Hit(r, act, -1))
+    }
+
+    private fun drawPick(c: Canvas, pk: WinPick) {
+        pickHits.clear()
+        p.color = Color.WHITE; p.shader = bg(); c.drawRect(0f, 0f, W, H, p); p.shader = null
+        val win = pk.win
+        // Cancel sits bottom right; Back (on the "Move" step) sits bottom left.
+        pill(c, "Cancel", W - PAD, H - 92f, "cancel", right = true)
+        if (win != null) pill(c, "Back", PAD, H - 92f, "back", right = false)
+        val title = if (win == null) "Pick a window" else "Move ${win.app}"
+        text(c, fit(title, 34f, res.semibold, W - 2 * PAD), PAD, 76f, 34f, res.semibold, TEXT)
+
+        val top = 132f; val bottom = H - 120f
+        c.save(); c.clipRect(0f, top - 10f, W, bottom)
+        var y = top - pk.scroll
+        if (win == null) {
+            if (pk.wins.isEmpty()) text(c, "No windows are open.", PAD, top + 60f, 30f, res.regular, TEXT2)
+            val cols = if (portrait) 2 else 4
+            val tw = (W - 2 * PAD - (cols - 1) * GAP) / cols; val th = 150f
+            pk.wins.forEachIndexed { i, w ->
+                val x = PAD + (i % cols) * (tw + GAP); val ty = y + (i / cols) * (th + GAP)
+                val r = RectF(x, ty, x + tw, ty + th)
+                p.color = Color.WHITE; p.shader = keyShader(th); c.save(); c.translate(x, ty); rf.set(0f, 0f, tw, th); c.drawRoundRect(rf, 24f, 24f, p); p.shader = null
+                stroke(c, 1f, 1f, tw - 1f, th - 1f, 23f, Color.parseColor("#2c2e3d"), 2f); c.restore()
+                val cy = ty + th / 2
+                val icon = res.icon(w.icon)
+                if (icon != null) { rf.set(x + 28f, cy - 36f, x + 100f, cy + 36f); bp.colorFilter = null; c.drawBitmap(icon, null, rf, bp) }
+                else glyph(c, "app-window", x + 64f, cy, 56f, Color.parseColor("#c9c8d6"))
+                val tx = x + 124f; val mw = tw - 124f - 24f
+                if (w.title != null) {
+                    text(c, fit(w.app, 28f, res.medium, mw), tx, cy - 6f, 28f, res.medium, TEXT)
+                    text(c, fit(w.title, 22f, res.regular, mw), tx, cy + 32f, 22f, res.regular, TEXT3)
+                } else text(c, fit(w.app, 28f, res.medium, mw), tx, cy + 10f, 28f, res.medium, TEXT)
+                pickHits.add(Hit(r, "win", i))
+            }
+            val rowsN = (pk.wins.size + cols - 1) / cols
+            pickMax = max(0f, rowsN * (th + GAP) - GAP - (bottom - top))
+        } else {
+            val mon = pk.mons.getOrNull(pk.mon)
+            if (pk.mons.size > 1) {
+                val minX = pk.mons.minOf { it.x }; val minY = pk.mons.minOf { it.y }
+                val maxX = pk.mons.maxOf { it.x + it.w }; val maxY = pk.mons.maxOf { it.y + it.h }
+                val bw = W - 2 * PAD; val bh = 180f
+                val k = min(bw / (maxX - minX).toFloat(), bh / (maxY - minY).toFloat())
+                val offX = PAD + (bw - (maxX - minX) * k) / 2f
+                pk.mons.forEachIndexed { i, m ->
+                    val r = RectF(offX + (m.x - minX) * k + 4f, y + (m.y - minY) * k + 4f, offX + (m.x - minX + m.w) * k - 4f, y + (m.y - minY + m.h) * k - 4f)
+                    val sel = i == pk.mon
+                    round(c, r.left, r.top, r.right, r.bottom, 12f, Color.parseColor(if (sel) "#2e2c4a" else "#222433"))
+                    stroke(c, r.left, r.top, r.right, r.bottom, 12f, if (sel) ACCENT else Color.parseColor("#3a3c4e"), if (sel) 4f else 2f)
+                    text(c, fit(m.name, 24f, res.medium, r.width() - 16f), r.centerX(), r.centerY() + 9f, 24f, res.medium, if (sel) TEXT else TEXT2, Paint.Align.CENTER)
+                    pickHits.add(Hit(r, "mon", i))
+                }
+                y += 180f + 48f
+            }
+            if (mon == null) text(c, "The computer didn't report any screens.", PAD, y + 60f, 30f, res.regular, TEXT2)
+            else {
+                val spots = WinPick.SPOTS.map { Triple(it.id, it.name, floatArrayOf(it.x.toFloat(), it.y.toFloat(), it.w.toFloat(), it.h.toFloat())) } +
+                    mon.zones.map { z -> Triple("zone:" + z.id, z.name, floatArrayOf(z.x.toFloat(), z.y.toFloat(), z.w.toFloat(), z.h.toFloat())) }
+                val cols = if (portrait) 3 else 6
+                val tw = (W - 2 * PAD - (cols - 1) * GAP) / cols
+                val ph = (tw - 36f) * (mon.h.toFloat() / mon.w).coerceIn(0.4f, 0.8f)
+                val th = ph + 36f + 46f
+                val y0 = y
+                spots.forEachIndexed { i, (id, name, f) ->
+                    val x = PAD + (i % cols) * (tw + GAP); val ty = y0 + (i / cols) * (th + GAP)
+                    val r = RectF(x, ty, x + tw, ty + th)
+                    p.color = Color.WHITE; p.shader = keyShader(th); c.save(); c.translate(x, ty); rf.set(0f, 0f, tw, th); c.drawRoundRect(rf, 22f, 22f, p); p.shader = null
+                    stroke(c, 1f, 1f, tw - 1f, th - 1f, 21f, Color.parseColor("#2c2e3d"), 2f); c.restore()
+                    val sx = x + 18f; val sy = ty + 18f; val sw = tw - 36f
+                    round(c, sx, sy, sx + sw, sy + ph, 8f, Color.parseColor("#2a2c3b"))
+                    round(c, sx + sw * f[0] + 3f, sy + ph * f[1] + 3f, sx + sw * (f[0] + f[2]) - 3f, sy + ph * (f[1] + f[3]) - 3f, 6f, if (id.startsWith("zone:")) ACCENT2 else ACCENT)
+                    text(c, fit(name, 22f, res.medium, tw - 20f), r.centerX(), ty + ph + 36f + 30f, 22f, res.medium, TEXT, Paint.Align.CENTER)
+                    pickHits.add(Hit(r, "spot", i))
+                }
+                val rowsN = (spots.size + cols - 1) / cols
+                pickMax = max(0f, (y0 + pk.scroll - top) + rowsN * (th + GAP) - GAP - (bottom - top))
+            }
+        }
+        c.restore()
+    }
+
+    private fun pickTouch(e: MotionEvent, x: Float, y: Float): Boolean {
+        val pk = pick ?: return false
+        when (e.actionMasked) {
+            MotionEvent.ACTION_DOWN -> { pickDown = true; pickMoved = false; downX = x; downY = y; pickStart = pk.scroll }
+            MotionEvent.ACTION_MOVE -> if (pickDown) {
+                if (abs(y - downY) > 20f || abs(x - downX) > 20f) pickMoved = true
+                if (pickMoved) { pk.scroll = (pickStart - (y - downY)).coerceIn(0f, pickMax); invalidate() }
+            }
+            MotionEvent.ACTION_UP -> {
+                if (pickDown && !pickMoved) {
+                    // Bottom-bar buttons first (they sit below the scrolling list), then the list itself.
+                    val hit = pickHits.firstOrNull { it.arg == -1 && it.r.contains(x, y) } ?: pickHits.firstOrNull { it.arg >= 0 && y in 122f..(H - 110f) && it.r.contains(x, y) }
+                    if (hit != null) pickAct(pk, hit)
+                }
+                pickDown = false
+            }
+            MotionEvent.ACTION_CANCEL -> pickDown = false
+        }
+        return true
+    }
+
+    private fun pickAct(pk: WinPick, h: Hit) {
+        when (h.act) {
+            "cancel" -> pick = null
+            "back" -> { pk.win = null; pk.scroll = 0f; invalidate() }
+            "win" -> { pk.win = pk.wins.getOrNull(h.arg); pk.scroll = 0f; invalidate() }
+            "mon" -> { pk.mon = h.arg; invalidate() }
+            "spot" -> {
+                val win = pk.win ?: return; val mon = pk.mons.getOrNull(pk.mon) ?: return
+                val ids = WinPick.SPOTS.map { it.id } + mon.zones.map { "zone:" + it.id }
+                ids.getOrNull(h.arg)?.let { cb.snap(pk.key, win.id, mon.id, it) }
+                pick = null
+            }
+        }
     }
 }

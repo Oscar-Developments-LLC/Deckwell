@@ -20,6 +20,8 @@ jobs:
           dotnet-version: '8.0.x'
       - name: Desktop tests (pairing crypto vs shared vector)
         run: dotnet test tests/desktop
+      - name: Editor portrait grid matches the shared vector
+        run: node tests/editor/portrait-vector.js --check
       - uses: actions/setup-java@v5
         with:
           distribution: temurin

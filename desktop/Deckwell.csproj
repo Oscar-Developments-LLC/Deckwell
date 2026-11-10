@@ -12,7 +12,7 @@
     <RootNamespace>Deckwell</RootNamespace>
     <ApplicationIcon>app.ico</ApplicationIcon>
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
-    <Version>1.0.0</Version>
+    <Version>1.1.0</Version>
     <Copyright>Copyright (c) 2026 Oscar Developments LLC</Copyright>
     <Company>Oscar Developments LLC</Company>
     <Product>Deckwell</Product>

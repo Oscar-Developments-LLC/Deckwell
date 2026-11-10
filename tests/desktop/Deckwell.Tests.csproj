@@ -10,6 +10,9 @@
     <Compile Include="../../desktop/Pairing.cs" Link="Pairing.cs" />
     <Compile Include="../../desktop/StatusParse.cs" Link="StatusParse.cs" />
     <Compile Include="../../desktop/PushServer.cs" Link="PushServer.cs" />
+    <Compile Include="../../desktop/SnapSpots.cs" Link="SnapSpots.cs" />
+    <Compile Include="../../desktop/TerminalCmd.cs" Link="TerminalCmd.cs" />
+    <Compile Include="../../desktop/PanelParse.cs" Link="PanelParse.cs" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />

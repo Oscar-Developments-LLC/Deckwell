@@ -13,8 +13,8 @@ android {
 
     defaultConfig {
         applicationId = "com.oscardevelopments.deckwell"
-        versionCode = 10000
-        versionName = "1.0.0"
+        versionCode = 10100
+        versionName = "1.1.0"
     }
 
     // Two builds from one codebase. No AndroidX anywhere: plain framework APIs only.
@@ -77,4 +77,5 @@ tasks.withType<Test>().configureEach {
     systemProperty("layout.json", rootProject.file("../shared/sample-layout.json").absolutePath)
     systemProperty("render.out", rootProject.file("../shared/render").absolutePath)
     systemProperty("pairing.vector", rootProject.file("../shared/pairing-vector.json").absolutePath)
+    systemProperty("portrait.vector", rootProject.file("../shared/portrait-vector.json").absolutePath)
 }

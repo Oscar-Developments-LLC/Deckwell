@@ -17,6 +17,10 @@ They talk over your local Wi-Fi, with a USB fallback for Android.
 - 1 to 6 volume sliders per page, on the left or right: master, per-app, and microphone
 - SSH command keys for homelab servers, plus PowerShell and Python scripts and URLs
 - Live status tiles: this PC's CPU and RAM, any command, any server over SSH, or values your own scripts push
+- Panels: bigger tiles that show a command's whole output, like a server's temperatures or its top processes
+- Portrait mode: hold the deck tall, sideways, or let it turn with the tablet. Each page gets a portrait layout automatically.
+- Terminal keys: open Windows Terminal, PowerShell, cmd, WSL or SSH, or type a command into an open terminal
+- Window snapping: snap a window to halves, thirds, quarters or your own zones on any monitor, restore a saved layout of windows, or pick a window right on the deck
 - Custom icons, or icons pulled from the app automatically
 - Everything is edited on the desktop; the deck just shows it
 - Paired and signed: only your deck can press your keys

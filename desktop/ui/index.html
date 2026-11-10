@@ -39,12 +39,20 @@
     <div class="center-head">
       <h1 id="pageTitle">Main</h1>
       <div class="head-controls">
+        <div class="seg view" id="viewSeg"><button data-v="landscape" title="Landscape: the deck held sideways"><span data-g="tablet-h"></span></button><button data-v="portrait" title="Portrait: the deck held tall"><span data-g="tablet"></span></button></div>
+        <span class="lgrid">
         <label class="ctl-label">Columns</label>
         <div class="stepper" id="colStep"><button data-d="-1"><span data-g="minus"></span></button><span class="val"></span><button data-d="1"><span data-g="plus"></span></button></div>
         <label class="ctl-label">Rows</label>
         <div class="stepper" id="rowStep"><button data-d="-1"><span data-g="minus"></span></button><span class="val"></span><button data-d="1"><span data-g="plus"></span></button></div>
+        </span>
+        <span class="pgrid" hidden>
+        <label class="ctl-label">Order</label>
+        <div class="seg" id="orderSeg" title="How keys move when the deck is held tall"><button data-v="reading">Reading</button><button data-v="mirror">Mirror</button></div>
+        </span>
         <label class="ctl-label">Sliders</label>
         <div class="seg" id="sliderSeg"><button data-v="left">Left</button><button data-v="right">Right</button><button data-v="off">Off</button></div>
+        <div class="seg" id="pSliderSeg" hidden><button data-v="top">Top</button><button data-v="bottom">Bottom</button><button data-v="off">Off</button></div>
         <label class="ctl-label" id="sliderStepLabel">Count</label>
         <div class="stepper" id="sliderStep"><button data-d="-1"><span data-g="minus"></span></button><span class="val"></span><button data-d="1"><span data-g="plus"></span></button></div>
       </div>
@@ -65,7 +73,10 @@
 <div id="intro" hidden></div>
 <div id="popover" class="popover" hidden></div>
 
+<div id="zones" hidden></div>
+
 <script src="glyphs.js"></script>
+<script src="portrait.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

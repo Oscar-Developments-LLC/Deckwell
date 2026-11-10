@@ -1,4 +1,4 @@
-# Status tiles
+# Status tiles and panels
 
 A status tile shows a live value on your deck: CPU use, a temperature, free disk space, whether a server is up, or anything a script can print.
 
@@ -192,3 +192,44 @@ To start a script like that when you sign in to Windows:
 | A red dot when it should be green | Your command exited with a non-zero code. Add `\|\|up` or `exit 0`. |
 
 Command errors are also written to `%APPDATA%\Deckwell\deckwell.log`.
+
+## Panels
+
+A **panel** is a bigger tile that shows **all** of a command's output, top to bottom, in a fixed-width font. **The text grows to fill the panel**, so a bigger panel with short output is easier to read across the room. Use it when one value isn't enough: a server's temperatures, its top processes, the last lines of a log.
+
+```
+┌──────────────────────────────┐
+│ Server temps               ● │  ← Title, and a green or red dot
+│ CPU package   54 C           │
+│ Core 0        51 C           │  ← everything the command printed
+│ GPU           61 C           │
+│ NVMe          42 C           │
+└──────────────────────────────┘
+```
+
+**To add one,** drag **Panel** from the action bar onto a key. It starts at 2 x 2 keys. Change **Width** (1 to 4) and **Height** (1 to 3) in the panel's settings. Other keys can't be in the way.
+
+Panels use the same **Data sources** as status tiles:
+
+| Source | What it shows |
+|---|---|
+| **This PC** | Built in: **Top apps by CPU** or **Top apps by memory** on this computer |
+| **Command** | Everything a PowerShell or cmd command prints |
+| **SSH** | Everything a command prints on one of your hosts |
+| **Push** | Whatever text your script sends (see [Push tiles](#push-tiles); the body is the text) |
+
+What gets shown:
+
+- Up to 60 lines. Lines longer than 120 characters are cut off.
+- Terminal colors are removed, and tabs become spaces.
+- Text is as big as fits (up to about 3 times the smallest size). If the output is too long even at the smallest size, **swipe up and down on the panel** on the deck to scroll.
+- The dot is **green** when the command worked (exit code 0) and **red** when it didn't.
+
+Tip: line things up in columns (like `printf "%-12s %s\n"` or PowerShell's `Format-Table`), since the font is fixed-width.
+
+**Example scripts** (generic, edit them for your setup):
+
+- [`examples/ssh/panel-temps.sh`](examples/ssh/panel-temps.sh): temperatures on a Linux server
+- [`examples/ssh/panel-top.sh`](examples/ssh/panel-top.sh): top processes on a Linux server
+- [`examples/powershell/panel-top.ps1`](examples/powershell/panel-top.ps1): top processes on this PC, for a Command panel
+

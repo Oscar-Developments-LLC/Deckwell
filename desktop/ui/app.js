@@ -9,12 +9,23 @@ const uid = () => Math.random().toString(36).slice(2, 10);
 const clone = o => JSON.parse(JSON.stringify(o));
 function hydrate(root) { (root || document).querySelectorAll('[data-g]').forEach(el => { if (!el.firstChild) el.innerHTML = svg(el.dataset.g); }); }
 
-/* ---------------- deck geometry (shared with the Android/iOS deck apps, 1920x1200 design units) ---------------- */
-const DECK = { W: 1920, H: 1200, pad: 37, top: 132, bottomReserve: 178, gap: 28, stripGap: 60, sliderW: 92, sliderGap: 50, maxSliders: 6 };
+/* ---------------- deck geometry (shared with the Android/iOS deck apps, 1920x1200 design units; 1200x1920 in portrait) ---------------- */
+const DECK = { W: 1920, H: 1200, pad: 37, top: 132, bottomReserve: 178, gap: 28, stripGap: 60, sliderW: 92, sliderGap: 50, maxSliders: 6, PW: 1200, PH: 1920 };
 /** Width of a slider strip with n sliders. 3 sliders = 376, the original fixed strip. */
 const stripW = n => n * DECK.sliderW + Math.max(0, n - 1) * DECK.sliderGap;
 const stripSide = p => p.sliders === 'left' || p.sliders === 'right' ? p.sliders : null;
+/** Size of a key in grid cells. Now Playing is 2 wide; a panel is pw x ph. */
+const sizeOf = k => k.type === 'nowplaying' ? { w: 2, h: 1 } : k.type === 'panel' ? { w: Math.max(1, Math.min(4, k.pw || 2)), h: Math.max(1, Math.min(3, k.ph || 2)) } : { w: 1, h: 1 };
+const portraitView = () => S.view === 'portrait';
+/** What the deck shows for a page in portrait: the grid from portrait.js (same steps as the deck app). */
+function portraitOf(p) {
+  const b = backPos(p);
+  const keys = p.keys.filter(k => k.row < p.rows && k.col < p.cols && !coversBack(p, k)).map(k => { const z = sizeOf(k); return { id: k.id, row: k.row, col: k.col, w: Math.min(z.w, p.cols - k.col), h: Math.min(z.h, p.rows - k.row) }; });
+  if (b) keys.unshift({ id: '__back', row: b.row, col: b.col, w: 1, h: 1 });
+  return window.portraitGrid(keys, p.cols, p.rows, p.porder === 'mirror' ? 'mirror' : 'reading');
+}
 function geom(p) {
+  if (portraitView()) return geomPortrait(p);
   const side = stripSide(p);
   const n = side ? Math.max(1, Math.min(DECK.maxSliders, p.strip.length)) : 0;
   const sw = side ? stripW(n) : 0;
@@ -24,8 +35,22 @@ function geom(p) {
   let h = (availH - (p.rows - 1) * DECK.gap) / p.rows;
   h = Math.min(h, w);
   return { strip: !!side, side, n, sw, w, h, availW, gridH: p.rows * h + (p.rows - 1) * DECK.gap,
-    gridX: side === 'left' ? sw + DECK.stripGap : 0, stripX: side === 'left' ? 0 : availW + DECK.stripGap,
-    totalW: availW + (side ? DECK.stripGap + sw : 0) };
+    gridX: side === 'left' ? sw + DECK.stripGap : 0, gridY: 0, stripX: side === 'left' ? 0 : availW + DECK.stripGap,
+    totalW: availW + (side ? DECK.stripGap + sw : 0), totalH: p.rows * h + (p.rows - 1) * DECK.gap, cols: p.cols, rows: p.rows };
+}
+/** Portrait: rows and columns swap, and the sliders run across the top or bottom (each slider is one row). */
+function geomPortrait(p) {
+  const side = stripSide(p) ? (p.pside === 'top' ? 'top' : 'bottom') : null;
+  const n = side ? Math.max(1, Math.min(DECK.maxSliders, p.strip.length)) : 0;
+  const sh = side ? stripW(n) : 0;
+  const pg = portraitOf(p);
+  const availW = DECK.PW - 2 * DECK.pad;
+  const availH = DECK.PH - DECK.top - DECK.bottomReserve - (side ? sh + DECK.stripGap : 0);
+  const w = (availW - (pg.cols - 1) * DECK.gap) / pg.cols;
+  const h = Math.min((availH - (pg.rows - 1) * DECK.gap) / pg.rows, w);
+  const gridH = pg.rows * h + (pg.rows - 1) * DECK.gap;
+  return { strip: !!side, side, n, sw: availW, sh, w, h, availW, gridH, gridX: 0, gridY: side === 'top' ? sh + DECK.stripGap : 0,
+    stripX: 0, stripY: side === 'top' ? 0 : gridH + DECK.stripGap, totalW: availW, totalH: gridH + (side ? sh + DECK.stripGap : 0), cols: pg.cols, rows: pg.rows, pg };
 }
 
 /* ---------------- bridge ---------------- */
@@ -48,7 +73,8 @@ const iconUrl = id => id ? (HOST ? `https://app.deckwell/icons/${id}.png` : (Dem
 const S = {
   cfg: null, pageId: null, sel: null, // sel: {t:'key', id} | {t:'slider', i}
   dev: { connected: false, link: null, rtt: 0, ip: '', usb: false, name: '', model: '', adb: true, pairState: '', pairError: '', deckApproved: false },
-  live: { np: null, status: {}, sliders: {} }, sessions: [], hist: [], fut: [], sync: 'ok', recording: false,
+  live: { np: null, status: {}, panel: {}, sliders: {} }, sessions: [], hist: [], fut: [], sync: 'ok', recording: false,
+  view: 'landscape', monitors: [], wtProfiles: null,
 };
 const page = id => S.cfg.pages.find(p => p.id === (id || S.pageId));
 const curPage = () => page(S.pageId);
@@ -59,7 +85,7 @@ const hostById = id => S.cfg.hosts.find(h => h.id === id);
 /* ---------------- default config ---------------- */
 /** A fresh install starts empty: one page, no keys, no hosts. Nothing is preset. */
 function defaultConfig() {
-  return { version: 1, deckIp: '', hosts: [], pages: [{ id: 'main', name: 'Main', parentId: null, cols: 5, rows: 3, sliders: 'off', strip: [null, null, null], keys: [] }] };
+  return { version: 1, deckIp: '', orient: 'landscape', hosts: [], pages: [{ id: 'main', name: 'Main', parentId: null, cols: 5, rows: 3, sliders: 'off', strip: [null, null, null], keys: [] }] };
 }
 
 /* ---------------- key faces (what the deck draws) ---------------- */
@@ -96,6 +122,11 @@ function faceOf(k, p) {
     case 'folder': f.glyph = 'folder'; break;
     case 'goto': f.glyph = 'goto'; if (isFolderPage) { const t = page(k.target); f.sub = t ? t.name : ''; } break;
     case 'back': f.glyph = 'back'; f.sub = k.sub; break;
+    case 'terminal': f.glyph = 'square-terminal'; if (isFolderPage) f.sub = (TERM_PROGRAMS.find(x => x[0] === k.program) || TERM_PROGRAMS[0])[2]; break;
+    case 'termsend': f.glyph = 'code'; break;
+    case 'snap': f.glyph = 'app-window'; if (isFolderPage) f.sub = spotName(k.spot, k.monitor); break;
+    case 'winpick': f.glyph = 'grid'; break;
+    case 'layout': f.glyph = 'monitor'; if (isFolderPage) f.sub = `${(k.windows || []).length} windows`; break;
   }
   if (k.glyph && !['app', 'hotkey', 'status', 'nowplaying'].includes(k.type)) f.glyph = k.glyph;
   return f;
@@ -112,6 +143,12 @@ function keyFaceHTML(k, p) {
       <div class="np-title">${esc(np ? np.title : 'Nothing playing')}</div>
       <div class="np-artist">${esc(np ? [np.artist, np.source].filter(Boolean).join(' · ') : 'Windows media')}</div>
       <div class="np-bar"><i style="width:${pct}%"></i></div><div class="np-time">${np && np.dur ? fmtTime(np.pos) + ' / ' + fmtTime(np.dur) : '0:00 / 0:00'}</div></div>`;
+  }
+  if (k.type === 'panel') {
+    const v = S.live.panel[k.id] || {};
+    const lines = String(v.text || '').split('\n');
+    return `<div class="st-title">${esc(k.title || k.label)}</div>${v.up === true || v.up === false ? `<div class="st-ud ${v.up ? 'up' : 'down'}"></div>` : ''}
+      <pre class="pn-text">${v.text ? lines.map(esc).join('\n') : '—'}</pre>`;
   }
   if (k.type === 'status') {
     const v = S.live.status[k.id] || {};
@@ -255,7 +292,14 @@ function renderHeader() {
   $('#pageTitle').textContent = p.name;
   $('#colStep .val').textContent = p.cols; $('#rowStep .val').textContent = p.rows;
   const side = stripSide(p) || 'off';
+  const port = portraitView();
+  document.querySelectorAll('#viewSeg button').forEach(b => b.classList.toggle('on', b.dataset.v === S.view));
+  document.querySelector('.lgrid').hidden = port; document.querySelector('.pgrid').hidden = !port;
+  $('#sliderSeg').hidden = port; $('#pSliderSeg').hidden = !port;
   document.querySelectorAll('#sliderSeg button').forEach(b => b.classList.toggle('on', b.dataset.v === side));
+  const pside = side === 'off' ? 'off' : p.pside === 'top' ? 'top' : 'bottom';
+  document.querySelectorAll('#pSliderSeg button').forEach(b => b.classList.toggle('on', b.dataset.v === pside));
+  document.querySelectorAll('#orderSeg button').forEach(b => b.classList.toggle('on', b.dataset.v === (p.porder === 'mirror' ? 'mirror' : 'reading')));
   $('#sliderStep').hidden = side === 'off'; $('#sliderStepLabel').hidden = side === 'off';
   $('#sliderStep .val').textContent = p.strip.length;
 }
@@ -275,29 +319,67 @@ function setSliderCount(p, n) {
   commit(); renderAll();
   if (lost) toast(`Removed ${lost} slider${lost > 1 ? 's' : ''}. Ctrl+Z brings ${lost > 1 ? 'them' : 'it'} back.`);
 }
+/** Where a folder's Back key sits: top-left unless moved. Off the grid (after shrinking it) falls back to top-left. */
+function backPos(p) {
+  if (!p.parentId) return null;
+  const b = p.back || { row: 0, col: 0 };
+  return b.row < p.rows && b.col < p.cols ? { row: b.row, col: b.col } : { row: 0, col: 0 };
+}
+/** A key covering the Back key's spot is hidden on the deck, so the editor hides it too. */
+function coversBack(p, k) { const b = backPos(p); if (!b) return false; const z = sizeOf(k); return b.row >= k.row && b.row < k.row + z.h && b.col >= k.col && b.col < k.col + z.w; }
 function occupancy(p) {
   const occ = {};
-  if (p.parentId) occ['0,0'] = '__back';
-  p.keys.forEach(k => { if (k.row < p.rows && k.col < p.cols) { occ[k.row + ',' + k.col] = k.id; if (span(k) === 2 && k.col + 1 < p.cols) occ[k.row + ',' + (k.col + 1)] = k.id; } });
+  p.keys.forEach(k => {
+    if (k.row >= p.rows || k.col >= p.cols || coversBack(p, k)) return;
+    const z = sizeOf(k);
+    for (let y = k.row; y < Math.min(p.rows, k.row + z.h); y++) for (let x = k.col; x < Math.min(p.cols, k.col + z.w); x++) occ[y + ',' + x] = k.id;
+  });
+  const b = backPos(p); if (b) occ[b.row + ',' + b.col] = '__back';
   return occ;
 }
-const span = k => k.type === 'nowplaying' ? 2 : 1;
-function backKey(p) { const par = page(p.parentId); return { id: '__back', type: 'back', row: 0, col: 0, label: 'Back', labelPos: 'bottom', sub: par ? par.name : '' }; }
+/** Panel text grows to fill the panel: never below 21, at most 64 (same rule as panelSize() in DeckView.kt).
+    The board is in deck design units, so the key's own size is the deck's size. JetBrains Mono is 0.6 em per character. */
+function fitPanel(el) {
+  const pre = el.querySelector('.pn-text'); if (!pre) return;
+  const lines = pre.textContent.split('\n');
+  const longest = Math.max(1, ...lines.map(l => l.length));
+  const w = el.clientWidth - 52 - 8, h = el.clientHeight - 84 - 18;
+  const fs = Math.max(21, Math.min(64, w / (longest * 0.6), h / (lines.length * 30 / 21)));
+  pre.style.fontSize = fs + 'px'; pre.style.lineHeight = (fs * 30 / 21) + 'px';
+}
+function backKey(p) { const par = page(p.parentId); const b = backPos(p) || { row: 0, col: 0 }; return { id: '__back', type: 'back', row: b.row, col: b.col, label: 'Back', labelPos: 'bottom', sub: par ? par.name : '' }; }
 function renderBoard() {
   const p = curPage(); const g = geom(p); const inner = $('#boardInner');
-  const occ = occupancy(p);
+  const port = portraitView();
   let html = '';
-  const pos = (r, c, sp) => `left:${g.gridX + c * (g.w + DECK.gap)}px;top:${r * (g.h + DECK.gap)}px;width:${sp * g.w + (sp - 1) * DECK.gap}px;height:${g.h}px`;
-  for (let r = 0; r < p.rows; r++) for (let c = 0; c < p.cols; c++) if (!occ[r + ',' + c]) html += `<div class="k empty" data-r="${r}" data-c="${c}" style="${pos(r, c, 1)}"></div>`;
-  const keys = p.keys.filter(k => k.row < p.rows && k.col < p.cols);
-  if (p.parentId) keys.unshift(backKey(p));
-  keys.forEach(k => {
-    const sp = Math.min(span(k), p.cols - k.col);
-    const cls = ['k', k.type === 'status' ? 'status' : k.type === 'nowplaying' ? 'np' : '', k.type === 'back' ? 'back locked' : '', k.labelPos === 'top' ? 'top' : '',
+  const pos = (r, c, w, h) => `left:${g.gridX + c * (g.w + DECK.gap)}px;top:${g.gridY + r * (g.h + DECK.gap)}px;width:${w * g.w + (w - 1) * DECK.gap}px;height:${h * g.h + (h - 1) * DECK.gap}px`;
+  // In portrait the keys sit where the deck puts them (portrait.js); the landscape grid is what you edit.
+  const placed = port ? g.pg.keys : p.keys.filter(k => k.row < p.rows && k.col < p.cols && !coversBack(p, k)).map(k => { const z = sizeOf(k); return { id: k.id, row: k.row, col: k.col, w: Math.min(z.w, p.cols - k.col), h: Math.min(z.h, p.rows - k.row) }; });
+  if (!port && p.parentId) { const b = backPos(p); placed.unshift({ id: '__back', row: b.row, col: b.col, w: 1, h: 1 }); }
+  const occ = {};
+  placed.forEach(q => { for (let y = q.row; y < q.row + q.h; y++) for (let x = q.col; x < q.col + q.w; x++) occ[y + ',' + x] = q.id; });
+  for (let r = 0; r < g.rows; r++) for (let c = 0; c < g.cols; c++) if (!occ[r + ',' + c]) html += `<div class="k empty${port ? ' locked' : ''}" data-r="${r}" data-c="${c}" style="${pos(r, c, 1, 1)}"></div>`;
+  placed.forEach(q => {
+    const k = q.id === '__back' ? backKey(p) : p.keys.find(x => x.id === q.id); if (!k) return;
+    const cls = ['k', k.type === 'status' ? 'status' : k.type === 'nowplaying' ? 'np' : k.type === 'panel' ? 'panel' : '', k.type === 'back' ? 'back' + (port ? ' locked' : '') : '', k.labelPos === 'top' ? 'top' : '',
       S.sel && S.sel.t === 'key' && S.sel.id === k.id ? 'sel' : ''].filter(Boolean).join(' ');
-    html += `<div class="${cls}" data-key="${k.id}" data-r="${k.row}" data-c="${k.col}" ${k.type !== 'back' ? 'draggable="true"' : ''} style="${pos(k.row, k.col, sp)}">${keyFaceHTML(k, p)}</div>`;
+    html += `<div class="${cls}" data-key="${k.id}" data-r="${k.row}" data-c="${k.col}" ${!port ? 'draggable="true"' : ''} style="${pos(q.row, q.col, q.w, q.h)}">${keyFaceHTML(k, p)}</div>`;
   });
-  if (g.strip) {
+  if (g.strip && port) {
+    html += `<div class="strip h" style="left:0;top:${g.stripY}px;width:${g.sw}px;height:${g.sh}px">`;
+    for (let i = 0; i < g.n; i++) {
+      const s = p.strip[i];
+      if (!s) { html += `<div class="slh empty" data-slot="${i}">+</div>`; continue; }
+      const live = S.live.sliders[s.id] || { value: 50, enabled: true };
+      const v = Math.max(0, Math.min(100, live.value));
+      const ic = s.control === 'mic' ? (live.muted ? 'mic-off' : 'mic') : live.muted ? 'volume-x' : s.control === 'master' ? 'volume-2' : 'volume-1';
+      html += `<div class="slh${live.enabled === false ? ' disabled' : ''}${S.sel && S.sel.t === 'slider' && S.sel.i === i ? ' sel' : ''}" data-slot="${i}">
+        <div class="slh-lab"><span>${esc(sliderName(s))}</span><b>${Math.round(v)}</b></div>
+        <div class="slh-track"><div class="slh-fill" style="width:${v}%"></div><div class="slh-thumb" style="left:${v}%"></div></div>
+        ${s.button === 'none' ? '' : `<div class="sl-btn">${gi(ic)}</div>`}</div>`;
+    }
+    html += '</div>';
+  } else if (g.strip) {
     html += `<div class="strip" style="left:${g.stripX}px;width:${g.sw}px;height:${g.gridH}px">`;
     for (let i = 0; i < g.n; i++) {
       const s = p.strip[i];
@@ -313,7 +395,9 @@ function renderBoard() {
     html += '</div>';
   }
   inner.innerHTML = html;
-  inner.style.width = g.totalW + 'px'; inner.style.height = g.gridH + 'px';
+  inner.querySelectorAll('.k.panel').forEach(fitPanel);
+  inner.style.width = g.totalW + 'px'; inner.style.height = g.totalH + 'px';
+  inner.classList.toggle('portrait', port);
   fitBoard();
 }
 function sliderName(s) { return s.control === 'master' ? 'Master' : s.control === 'mic' ? 'Mic' : (s.appLabel || s.app || 'App'); }
@@ -321,8 +405,8 @@ function sliderShort(s) { return s.control === 'master' ? 'MST' : s.control === 
 function fitBoard() {
   const p = curPage(); const g = geom(p); const wrap = $('#boardWrap'); const inner = $('#boardInner');
   const availW = wrap.clientWidth - 42;
-  const availH = Math.max(160, window.innerHeight - 34 - 16 - 40 - 16 - 42 - 230);
-  const z = Math.max(0.12, Math.min(availW / g.totalW, availH / g.gridH, 0.6));
+  const availH = Math.max(160, window.innerHeight - 34 - 16 - 40 - 16 - 42 - 312);
+  const z = Math.max(0.1, Math.min(availW / g.totalW, availH / g.totalH, 0.6));
   inner.style.zoom = z;
 }
 
@@ -330,7 +414,9 @@ function fitBoard() {
 const PALETTE = [
   ['System', [['app', 'app-window', 'Launch app'], ['hotkey', 'keyboard', 'Hotkey'], ['media', 'media-chip', 'Media key'], ['url', 'globe', 'Open URL']]],
   ['Scripts', [['ps', 'terminal', 'PowerShell'], ['py', 'file-py', 'Python']]],
-  ['Homelab', [['ssh', 'square-terminal', 'SSH command'], ['status', 'chart', 'Status tile']]],
+  ['Homelab', [['ssh', 'square-terminal', 'SSH command'], ['status', 'chart', 'Status tile'], ['panel', 'activity', 'Panel']]],
+  ['Terminal', [['terminal', 'square-terminal', 'Open terminal'], ['termsend', 'code', 'Send to terminal']]],
+  ['Windows', [['snap', 'app-window', 'Snap window'], ['winpick', 'grid', 'Window picker'], ['layout', 'monitor', 'Window layout']]],
   ['Deck', [['folder', 'folder', 'Folder'], ['goto', 'goto', 'Go to page'], ['nowplaying', 'music', 'Now Playing'], ['slider', 'sliders', 'Slider']]],
 ];
 function renderPalette() {
@@ -351,6 +437,12 @@ function newKey(kind, row, col) {
     case 'status': return Object.assign(base, { type: 'status', label: 'CPU', title: 'CPU', source: 'pc', metric: 'cpu', show: 'valuebar', refresh: 5, onTap: '' });
     case 'goto': { const t = S.cfg.pages.find(p => !p.parentId && p.id !== S.pageId); return Object.assign(base, { type: 'goto', label: t ? t.name : 'Go to page', target: t ? t.id : null }); }
     case 'nowplaying': return Object.assign(base, { type: 'nowplaying', label: 'Now Playing', labelPos: 'hidden' });
+    case 'panel': return Object.assign(base, { type: 'panel', label: 'Top apps', title: 'Top apps', source: 'pc', metric: 'topcpu', refresh: 5, pw: 2, ph: 2, onTap: '' });
+    case 'terminal': return Object.assign(base, { type: 'terminal', label: 'Terminal', program: 'wt', openIn: 'window', profile: '', folder: '', command: '', admin: false, hostId: firstHost, keyPath: '~/.ssh/id_ed25519' });
+    case 'termsend': return Object.assign(base, { type: 'termsend', label: 'Send text', text: '', target: 'recent', title: '' });
+    case 'snap': return Object.assign(base, { type: 'snap', label: 'Left half', target: 'active', exe: '', monitor: 'current', spot: 'left' });
+    case 'winpick': return Object.assign(base, { type: 'winpick', label: 'Move window' });
+    case 'layout': return Object.assign(base, { type: 'layout', label: 'Layout', windows: [] });
     case 'folder': {
       const fp = { id: uid(), name: 'Folder', parentId: S.pageId, cols: 5, rows: 3, sliders: 'off', strip: [null, null, null], keys: [] };
       S.cfg.pages.push(fp);
@@ -359,9 +451,16 @@ function newKey(kind, row, col) {
   }
 }
 function cellFree(p, r, c, ignoreId) { const o = occupancy(p)[r + ',' + c]; return !o || o === ignoreId; }
-function firstFree(p, sp) {
-  for (let r = 0; r < p.rows; r++) for (let c = 0; c < p.cols; c++)
-    if (cellFree(p, r, c) && (sp < 2 || (c + 1 < p.cols && cellFree(p, r, c + 1)))) return [r, c];
+/** True if a w x h key fits at r,c inside the grid without covering another key (ignoreId may be covered). */
+function areaFree(p, r, c, w, h, ignoreId) {
+  if (r + h > p.rows || c + w > p.cols) return false;
+  const occ = occupancy(p);
+  for (let y = r; y < r + h; y++) for (let x = c; x < c + w; x++) { const o = occ[y + ',' + x]; if (o && o !== ignoreId) return false; }
+  return true;
+}
+function firstFree(p, z) {
+  z = typeof z === 'number' ? { w: z, h: 1 } : z || { w: 1, h: 1 };
+  for (let r = 0; r < p.rows; r++) for (let c = 0; c < p.cols; c++) if (areaFree(p, r, c, z.w, z.h)) return [r, c];
   return null;
 }
 function removeKey(p, k) {
@@ -376,13 +475,14 @@ function deletePageTree(pid) {
 function placeNew(kind, r, c) {
   const p = curPage();
   if (kind === 'slider') return addSlider();
-  const sp = kind === 'nowplaying' ? 2 : 1;
-  if (r == null) { const f = firstFree(p, sp); if (!f) return toast(sp > 1 ? 'Now Playing needs two free keys side by side' : 'No free keys on this page'); [r, c] = f; }
-  if (p.parentId && r === 0 && c === 0) return toast('The top-left key in a folder is Back');
-  if (sp === 2 && (c + 1 >= p.cols || (p.parentId && r === 0 && c + 1 === 0))) return toast('Now Playing needs two keys side by side');
+  const z = sizeOf({ type: kind === 'panel' ? 'panel' : kind === 'nowplaying' ? 'nowplaying' : 'x', pw: 2, ph: 2 });
+  const what = kind === 'nowplaying' ? 'Now Playing needs two free keys side by side' : kind === 'panel' ? 'A panel needs 2 x 2 free keys' : 'No free keys on this page';
+  if (r == null) { const f = firstFree(p, z); if (!f) return toast(what); [r, c] = f; }
+  if (r + z.h > p.rows || c + z.w > p.cols) return toast(what.replace('free ', ''));
   // replace whatever is there
-  const hit = p.keys.filter(k => k.row === r && (k.col === c || (span(k) === 2 && k.col + 1 === c) || (sp === 2 && k.col === c + 1)));
-  hit.forEach(k => removeKey(p, k));
+  const occ = occupancy(p); const hitIds = new Set();
+  for (let y = r; y < r + z.h; y++) for (let x = c; x < c + z.w; x++) { const o = occ[y + ',' + x]; if (o === '__back') return toast('That spot is the Back key. Drag Back somewhere else first.'); if (o) hitIds.add(o); }
+  p.keys.filter(k => hitIds.has(k.id)).forEach(k => removeKey(p, k));
   const k = newKey(kind, r, c); p.keys.push(k);
   S.sel = { t: 'key', id: k.id }; commit(); renderAll();
 }
@@ -396,22 +496,51 @@ function addSlider(slot) {
   p.strip[slot] = { id: uid(), control: 'master', app: '', appLabel: '', step: 2, button: 'mute' };
   S.sel = { t: 'slider', i: slot }; commit(); renderAll();
 }
+/** Drag the Back key to another spot in its folder. Dropping it on a one-key-sized key swaps the two. */
+function moveBack(p, r, c) {
+  const b = backPos(p); if (!b || (b.row === r && b.col === c)) return;
+  const other = occupancy(p)[r + ',' + c];
+  if (other) {
+    const o = p.keys.find(x => x.id === other); const z = sizeOf(o);
+    if (z.w !== 1 || z.h !== 1 || o.row !== r || o.col !== c) return toast('Back can only swap with a one-key-sized key');
+    o.row = b.row; o.col = b.col;
+  }
+  p.back = { row: r, col: c }; commit(); renderAll();
+}
 function moveKey(k, fromP, toP, r, c) {
-  const sp = span(k);
-  if (toP.parentId && r === 0 && (c === 0 || (sp === 2 && c + 1 === 0))) return toast('The top-left key in a folder is Back');
-  if (sp === 2 && c + 1 >= toP.cols) return toast('Not enough room for Now Playing there');
-  const occ = occupancy(toP);
-  const targets = [occ[r + ',' + c], sp === 2 ? occ[r + ',' + (c + 1)] : null].filter(x => x && x !== k.id);
-  if (targets.includes('__back')) return toast('The top-left key in a folder is Back');
+  const z = sizeOf(k);
+  const tb = backPos(toP);
+  // Dropping a small key on Back swaps them (same folder only).
+  if (tb && tb.row === r && tb.col === c && fromP === toP && z.w === 1 && z.h === 1) { toP.back = { row: k.row, col: k.col }; k.row = r; k.col = c; commit(); renderAll(); return; }
+  if (c + z.w > toP.cols || r + z.h > toP.rows) return toast(`Not enough room for ${k.type === 'panel' ? 'the panel' : 'Now Playing'} there`);
+  const occ = occupancy(toP); const targets = [];
+  for (let y = r; y < r + z.h; y++) for (let x = c; x < c + z.w; x++) { const o = occ[y + ',' + x]; if (o && o !== k.id) targets.push(o); }
+  if (targets.includes('__back')) return toast('The Back key is in the way. Drag Back somewhere else first.');
   const others = [...new Set(targets)].map(id => toP.keys.find(x => x.id === id));
-  if (others.length > 1 || (others[0] && span(others[0]) !== sp)) return toast("Can't swap those two keys");
+  const same = o => { const oz = sizeOf(o); return oz.w === z.w && oz.h === z.h && o.row === r && o.col === c; };
+  if (others.length > 1 || (others[0] && !same(others[0]))) return toast("Can't swap those two keys");
   if (others[0]) { others[0].row = k.row; others[0].col = k.col; if (fromP !== toP) { toP.keys = toP.keys.filter(x => x !== others[0]); fromP.keys.push(others[0]); } }
   if (fromP !== toP) { fromP.keys = fromP.keys.filter(x => x !== k); toP.keys.push(k); if (k.type === 'folder') { const fp = page(k.target); if (fp) fp.parentId = toP.id; } }
   k.row = r; k.col = c; commit(); renderAll();
 }
 
 /* ---------------- inspector ---------------- */
-const TYPE_NAMES = { app: 'Launch app', hotkey: 'Hotkey', media: 'Media key', url: 'Open URL', script: 'Script', ssh: 'SSH command', status: 'Status tile', folder: 'Folder', goto: 'Go to page', nowplaying: 'Now Playing', back: 'Back' };
+const TYPE_NAMES = { app: 'Launch app', hotkey: 'Hotkey', media: 'Media key', url: 'Open URL', script: 'Script', ssh: 'SSH command', status: 'Status tile', folder: 'Folder', goto: 'Go to page', nowplaying: 'Now Playing', back: 'Back',
+  panel: 'Panel', terminal: 'Open terminal', termsend: 'Send to terminal', snap: 'Snap window', winpick: 'Window picker', layout: 'Window layout' };
+const TERM_PROGRAMS = [['wt', 'Windows Terminal', 'terminal'], ['powershell', 'PowerShell', 'powershell'], ['pwsh', 'PowerShell 7', 'pwsh'], ['cmd', 'cmd', 'cmd'], ['wsl', 'WSL', 'wsl'], ['ssh', 'SSH', 'ssh']];
+/** Snap spots. Same ids and fractions as desktop/SnapSpots.cs and the deck's window picker. */
+const SPOTS = [['max', 'Maximize', 0, 0, 1, 1], ['left', 'Left half', 0, 0, .5, 1], ['right', 'Right half', .5, 0, .5, 1], ['top', 'Top half', 0, 0, 1, .5], ['bottom', 'Bottom half', 0, .5, 1, .5],
+  ['third-l', 'Left third', 0, 0, 1 / 3, 1], ['third-c', 'Middle third', 1 / 3, 0, 1 / 3, 1], ['third-r', 'Right third', 2 / 3, 0, 1 / 3, 1], ['two-l', 'Left two-thirds', 0, 0, 2 / 3, 1], ['two-r', 'Right two-thirds', 1 / 3, 0, 2 / 3, 1],
+  ['tl', 'Top left', 0, 0, .5, .5], ['tr', 'Top right', .5, 0, .5, .5], ['bl', 'Bottom left', 0, .5, .5, .5], ['br', 'Bottom right', .5, .5, .5, .5], ['center', 'Center', .15, .1, .7, .8]];
+const mainMonitor = () => S.monitors.find(m => m.main) || S.monitors[0];
+/** The monitor whose zones a key can use: a chosen monitor, or the main one. "Current" has no fixed zones. */
+const zoneMonitor = mon => mon === 'current' || !mon ? null : mon === 'main' ? mainMonitor() : S.monitors.find(m => m.id === mon) || { id: mon, name: 'Unplugged display', w: 1920, h: 1080 };
+const zonesOf = id => (S.cfg.zones && S.cfg.zones[id]) || [];
+function spotName(spot, mon) {
+  const b = SPOTS.find(x => x[0] === spot); if (b) return b[1];
+  const m = zoneMonitor(mon); const z = m && zonesOf(m.id).find(x => 'zone:' + x.id === spot);
+  return z ? z.name : 'Zone';
+}
 const seg = (field, opts, val, extra) => `<div class="seg${extra || ''}" data-seg="${field}">${opts.map(([v, n, g]) => `<button data-v="${v}" class="${String(val) === String(v) ? 'on' : ''}">${g ? gi(g) : ''}${n}</button>`).join('')}</div>`;
 const field = (label, inner) => `<div class="field"><label>${label}</label>${inner}</div>`;
 const input = (f, v, o) => `<input class="in${o && o.mono ? ' mono' : ''}" data-f="${f}" value="${esc(v)}" placeholder="${esc(o && o.ph || '')}" spellcheck="false">`;
@@ -430,13 +559,16 @@ const labelFields = k => field('Label', input('label', k.label)) + field('Label 
 const footer = (test) => `<div class="ins-foot">${test ? `<button class="btn" data-act="test">${gi('play')}Test</button>` : ''}<button class="btn" data-act="dup">${gi('copy')}Duplicate</button><span class="spacer"></span><button class="clear" data-act="clear">${gi('trash')}Clear</button></div>`;
 
 /* ---------------- extra steps + "then show page" ---------------- */
-const EXTRA_TYPES = ['app', 'hotkey', 'media', 'url', 'script', 'ssh', 'folder', 'goto'];
-const STEP_TYPES = { app: ['Open app', 'app-window'], hotkey: ['Hotkey', 'keyboard'], media: ['Media key', 'play-pause'], url: ['Open URL', 'globe'], script: ['Run script', 'terminal'], ssh: ['SSH command', 'square-terminal'], wait: ['Wait', 'clock'] };
+const EXTRA_TYPES = ['app', 'hotkey', 'media', 'url', 'script', 'ssh', 'folder', 'goto', 'terminal', 'termsend', 'snap', 'layout'];
+const STEP_TYPES = { app: ['Open app', 'app-window'], hotkey: ['Hotkey', 'keyboard'], media: ['Media key', 'play-pause'], url: ['Open URL', 'globe'], script: ['Run script', 'terminal'], ssh: ['SSH command', 'square-terminal'],
+  snap: ['Snap window', 'app-window'], terminal: ['Open terminal', 'square-terminal'], termsend: ['Send to terminal', 'code'], wait: ['Wait', 'clock'] };
 function newStep(t) {
   const host = S.cfg.hosts[0] ? S.cfg.hosts[0].id : null;
   return Object.assign({ id: uid(), type: t }, ({
     app: { exe: '', args: '', ifRunning: 'focus' }, hotkey: { keys: [] }, media: { media: 'playpause' }, url: { url: 'https://' },
     script: { runtime: 'powershell', file: '', window: 'hidden' }, ssh: { hostId: host, command: '' }, wait: { ms: 1000 },
+    snap: { target: 'active', exe: '', monitor: 'current', spot: 'left' }, terminal: { program: 'wt', openIn: 'window', profile: '', folder: '', command: '', admin: false, hostId: host, keyPath: '~/.ssh/id_ed25519' },
+    termsend: { text: '', target: 'recent', title: '' },
   })[t]);
 }
 const sIn = (i, f, v, o) => `<input class="in${o && o.mono ? ' mono' : ''}" data-si="${i}" data-sf="${f}"${o && o.num ? ' data-num="1"' : ''} value="${esc(v)}" placeholder="${esc(o && o.ph || '')}" spellcheck="false">`;
@@ -456,6 +588,14 @@ function stepBody(s, i) {
       + sSeg(i, 'runtime', [['powershell', 'PowerShell'], ['python', 'Python']], s.runtime);
     case 'ssh': return `<select class="in" data-si="${i}" data-sf="hostId">${S.cfg.hosts.map(h => `<option value="${h.id}"${h.id === s.hostId ? ' selected' : ''}>${esc(h.name)}</option>`).join('')}</select>`
       + sIn(i, 'command', s.command, { mono: 1, ph: 'uptime' });
+    case 'snap': return sSeg(i, 'target', [['active', 'Active window'], ['app', 'An app']], s.target)
+      + (s.target === 'app' ? `<div class="inrow">${sIn(i, 'exe', s.exe, { mono: 1, ph: 'C:\\path\\to\\app.exe' })}<button class="btnsq" data-act="stepExe" data-si="${i}">${gi('folder-open')}</button></div>` : '')
+      + `<select class="in" data-si="${i}" data-sf="monitor">${monitorOptions(s.monitor)}</select><select class="in" data-si="${i}" data-sf="spot">${spotOptions(s.spot, s.monitor)}</select>`;
+    case 'terminal': return `<select class="in" data-si="${i}" data-sf="program">${TERM_PROGRAMS.map(([v, n]) => `<option value="${v}"${v === s.program ? ' selected' : ''}>${n}</option>`).join('')}</select>`
+      + (s.program === 'ssh' ? `<select class="in" data-si="${i}" data-sf="hostId">${S.cfg.hosts.map(h => `<option value="${h.id}"${h.id === s.hostId ? ' selected' : ''}>${esc(h.name)}</option>`).join('')}</select>` : sIn(i, 'folder', s.folder, { mono: 1, ph: 'Start folder (optional)' }))
+      + (s.program === 'wt' ? '' : sIn(i, 'command', s.command, { mono: 1, ph: 'Command to run (optional)' }));
+    case 'termsend': return sIn(i, 'text', s.text, { mono: 1, ph: 'Text to type' }) + sSeg(i, 'target', [['recent', 'Last terminal'], ['title', 'By title']], s.target)
+      + (s.target === 'title' ? sIn(i, 'title', s.title, { ph: 'Window title has…' }) : '');
     case 'wait': return `<div class="waitrow">${sIn(i, 'sec', +((s.ms || 0) / 1000).toFixed(2), { num: 1 })}<span>seconds</span></div>`;
   }
   return '';
@@ -543,33 +683,97 @@ function renderInspector() {
     case 'folder':
       h += iconSection(k) + labelFields(k)
         + `<div class="field"><button class="btn" data-act="openFolder">${gi('folder-open')}Open folder</button></div>`
-        + '<div class="help">Folders get a Back key in the top-left. Double-click the key to open it.</div>';
+        + '<div class="help">Folders get a Back key, top-left to start. Drag it to move it. Double-click the key to open it.</div>';
       break;
     case 'goto':
       h += iconSection(k) + labelFields(k)
         + field('Page', `<select class="in" data-f="target">${S.cfg.pages.filter(x => x.id !== p.id).map(x => `<option value="${x.id}"${x.id === k.target ? ' selected' : ''}>${esc(x.name)}</option>`).join('')}</select>`);
       break;
+    case 'panel': {
+      const z = sizeOf(k);
+      h += field('Title', input('title', k.title))
+        + `<div class="row2"><div class="field"><label>Width</label><div class="stepper" data-size="pw"><button data-d="-1">${gi('minus')}</button><span class="val">${z.w}</span><button data-d="1">${gi('plus')}</button></div></div>`
+        + `<div class="field"><label>Height</label><div class="stepper" data-size="ph"><button data-d="-1">${gi('minus')}</button><span class="val">${z.h}</span><button data-d="1">${gi('plus')}</button></div></div></div>`
+        + statusSourceFields(k, true)
+        + `<div class="row2">${k.source === 'push' ? '' : `<div class="field"><label>Refresh</label>${suffixInput('refresh', k.refresh, 's')}</div>`}${field('On tap', input('onTap', k.onTap, { ph: 'URL to open' }))}</div>`;
+      break;
+    }
+    case 'terminal': {
+      const prog = TERM_PROGRAMS.some(x => x[0] === k.program) ? k.program : 'wt';
+      if (S.wtProfiles == null) { S.wtProfiles = []; call('wtProfiles', {}).then(r => { S.wtProfiles = r || []; if (selKey() === k) renderInspector(); }).catch(() => {}); }
+      const profs = S.wtProfiles.slice(); if (k.profile && !profs.includes(k.profile)) profs.unshift(k.profile);
+      h += iconSection(k) + labelFields(k)
+        + field('Program', seg('program', TERM_PROGRAMS.map(([v, n]) => [v, n]), prog, ' wrap'))
+        + (prog === 'ssh' ? field('Host', `<div class="hostchips">${seg('hostId', S.cfg.hosts.map(x => [x.id, esc(x.name)]).concat([['__add', gi('plus')]]), k.hostId)}</div>`) + field('Auth', input('keyPath', k.keyPath, { mono: 1, ph: '~/.ssh/id_ed25519' })) : '')
+        + field('Open in', seg('openIn', [['window', 'New window'], ['tab', 'New tab']], k.openIn || 'window'))
+        + field('Windows Terminal profile', `<select class="in" data-f="profile"><option value=""${!k.profile ? ' selected' : ''}>Default profile</option>${profs.map(n => `<option value="${esc(n)}"${n === k.profile ? ' selected' : ''}>${esc(n)}</option>`).join('')}</select>`)
+        + (prog === 'ssh' ? '' : field('Start folder', `<div class="inrow">${input('folder', k.folder, { mono: 1, ph: 'optional, like C:\\Projects' })}<button class="btnsq" data-act="browseFolder">${gi('folder-open')}</button></div>`))
+        + (prog === 'wt' ? '<div class="help">Opens the profile you pick. To also run a command, pick PowerShell, cmd, WSL or SSH.</div>'
+          : field('Command when it opens', `<textarea class="in mono" data-f="command" spellcheck="false" placeholder="${prog === 'cmd' ? 'dir' : prog === 'wsl' || prog === 'ssh' ? 'htop' : 'Get-Process | Sort CPU -Desc | Select -First 10'}">${esc(k.command)}</textarea>`) + '<div class="help">Optional. The terminal stays open after it runs.</div>')
+        + field('Run as', seg('admin', [['false', 'Normal'], ['true', 'Admin']], k.admin ? 'true' : 'false'))
+        + '<div class="help">New tab goes into the Windows Terminal window you used last. Without Windows Terminal, it opens in a classic console window.</div>';
+      break;
+    }
+    case 'termsend':
+      h += iconSection(k) + labelFields(k)
+        + field('Text to send', `<textarea class="in mono" data-f="text" spellcheck="false" placeholder="git status">${esc(k.text)}</textarea>`)
+        + '<div class="help">Typed exactly as written. Nothing presses Enter for you. A line break in the text is typed as Enter.</div>'
+        + field('Send to', seg('target', [['recent', 'Last used terminal'], ['title', 'Window title has…']], k.target || 'recent'))
+        + (k.target === 'title' ? field('Title has', input('title', k.title, { ph: 'e.g. Ubuntu or my-server' })) : '')
+        + '<div class="help">If no terminal is open, nothing happens. A terminal running as admin needs Deckwell to run as admin too.</div>';
+      break;
+    case 'snap': {
+      if (!S.monitors.length) refreshMonitors();
+      h += iconSection(k) + labelFields(k)
+        + field('Window', seg('target', [['active', 'Active window'], ['app', 'An app']], k.target || 'active'))
+        + (k.target === 'app' ? field('App', `<div class="inrow">${input('exe', k.exe, { mono: 1, ph: 'C:\\path\\to\\app.exe' })}<button class="btnsq" data-act="browseSnapExe">${gi('folder-open')}</button></div>`) + '<div class="help">Opens the app first if it isn\'t running.</div>' : '')
+        + field('Monitor', `<select class="in" data-f="monitor">${monitorOptions(k.monitor)}</select>`)
+        + field('Spot', spotGrid(k))
+        + `<div class="field"><button class="btn" data-act="editZones" data-mon="${esc(k.monitor || '')}">${gi('pencil')}Edit zones</button></div>`
+        + '<div class="help">Custom zones show up once you pick Main or a specific monitor. If that monitor is unplugged, the main one is used.</div>';
+      break;
+    }
+    case 'winpick': {
+      const hide = !!(S.cfg.snap && S.cfg.snap.hideTitles);
+      h += iconSection(k) + labelFields(k)
+        + '<div class="help" style="margin-top:0">Tap it on the deck to see your open windows. Pick one, then pick a monitor and a spot.</div>'
+        + field('On the deck, show', seg('hideTitles', [['false', 'App + window title'], ['true', 'App name only']], hide ? 'true' : 'false'))
+        + '<div class="help">Window titles can show things like email subjects. They are sent to the deck signed, not encrypted.</div>'
+        + `<div class="field"><button class="btn" data-act="editZones" data-mon="main">${gi('pencil')}Edit zones</button></div>`;
+      break;
+    }
+    case 'layout': {
+      const wins = k.windows || [];
+      h += iconSection(k) + labelFields(k)
+        + `<div class="field"><button class="btn accent" data-act="captureLayout">${gi('camera')}${wins.length ? 'Capture again' : 'Capture my windows now'}</button></div>`
+        + '<div class="help">Saves where every open window is right now. Minimized windows are skipped. Pressing the key puts them back and opens any app that isn\'t running.</div>'
+        + field(`Saved windows (${wins.length})`, wins.length ? `<div class="winlist">${wins.map((w, i) => `<div class="wl"><div class="wl-t"><b>${esc(w.app)}</b><span>${esc(w.monName || '')} · ${w.max ? 'maximized' : Math.round(w.w * 100) + '% × ' + Math.round(w.h * 100) + '%'}</span></div><button class="mini" data-act="dropWin" data-i="${i}" title="Remove">${gi('x')}</button></div>`).join('')}</div>` : '<div class="lastrun"><span class="dim">Nothing saved yet</span></div>');
+      break;
+    }
     case 'nowplaying':
       h += '<div class="help" style="margin-top:0">Shows whatever Windows is playing right now: track, artist, app, progress and album art. Tap it on the deck to play or pause.</div>'
         + '<div class="help">Takes two keys side by side.</div>';
       break;
   }
   if (EXTRA_TYPES.includes(k.type)) h += extrasSection(k, p);
-  h += footer(!['folder', 'goto', 'nowplaying'].includes(k.type) || (k.steps && k.steps.length > 0));
+  h += footer(!['folder', 'goto', 'nowplaying', 'panel'].includes(k.type) || (k.steps && k.steps.length > 0));
   el.innerHTML = h; hydrate(el);
 }
 /* ---------------- status tile sources (docs/status-tiles.md) ---------------- */
 const STATUS_FORMAT = '<div class="help">The last line your command prints is shown on the tile: <span class="code">value|subtitle|bar</span>, like <span class="code">72%|4 cores|0.72</span>. Only the value is required. <a href="#" data-act="docs" data-doc="status-tiles">How status tiles work</a></div>';
-function statusSourceFields(k) {
+const PANEL_FORMAT = '<div class="help">Everything your command prints is shown, top to bottom. The text grows to fill the panel. If it\'s too long, swipe up and down on the deck to scroll. <a href="#" data-act="docs" data-doc="status-tiles">How panels work</a></div>';
+function statusSourceFields(k, panel) {
   const src = ['pc', 'command', 'ssh', 'push'].includes(k.source) ? k.source : '';
+  const FORMAT = panel ? PANEL_FORMAT : STATUS_FORMAT;
   let h = field('Data source', seg('source', [['pc', 'This PC'], ['command', 'Command'], ['ssh', 'SSH'], ['push', 'Push']], src));
-  if (!src) return h + '<div class="help">Pick where this tile gets its value. It shows "—" until then.</div>';
-  if (src === 'pc') h += field('Show this PC\'s', seg('metric', [['cpu', 'CPU'], ['ram', 'RAM']], k.metric || 'cpu'));
+  if (!src) return h + `<div class="help">Pick where this ${panel ? 'panel' : 'tile'} gets its ${panel ? 'text' : 'value'}. It shows "—" until then.</div>`;
+  if (src === 'pc' && panel) h += field('Show this PC\'s', seg('metric', [['topcpu', 'Top apps by CPU'], ['topmem', 'Top apps by memory']], k.metric === 'topmem' ? 'topmem' : 'topcpu'));
+  else if (src === 'pc') h += field('Show this PC\'s', seg('metric', [['cpu', 'CPU'], ['ram', 'RAM']], k.metric || 'cpu'));
   if (src === 'command') h += field('Runs in', seg('shell', [['powershell', 'PowerShell'], ['cmd', 'cmd']], k.shell || 'powershell'))
-    + field('Command', `<textarea class="in mono" data-f="command" spellcheck="false" placeholder="$d = Get-PSDrive C; '{0:0}%|C: {1:0} GB free' -f (100*$d.Used/($d.Used+$d.Free)), ($d.Free/1GB)">${esc(k.command)}</textarea>`) + STATUS_FORMAT;
+    + field('Command', `<textarea class="in mono" data-f="command" spellcheck="false" placeholder="${panel ? 'Get-Process | Sort CPU -Desc | Select -First 10 Name, CPU | Format-Table -Auto' : "$d = Get-PSDrive C; '{0:0}%|C: {1:0} GB free' -f (100*$d.Used/($d.Used+$d.Free)), ($d.Free/1GB)"}">${esc(k.command)}</textarea>`) + FORMAT;
   if (src === 'ssh') h += field('Host', `<div class="hostchips">${seg('hostId', S.cfg.hosts.map(x => [x.id, esc(x.name)]).concat([['__add', gi('plus')]]), k.hostId)}</div>`)
-    + field('Command', `<textarea class="in mono" data-f="command" spellcheck="false" placeholder="uptime -p">${esc(k.command)}</textarea>`)
-    + field('Auth', input('keyPath', k.keyPath, { mono: 1, ph: '~/.ssh/id_ed25519' })) + STATUS_FORMAT;
+    + field('Command', `<textarea class="in mono" data-f="command" spellcheck="false" placeholder="${panel ? 'sensors' : 'uptime -p'}">${esc(k.command)}</textarea>`)
+    + field('Auth', input('keyPath', k.keyPath, { mono: 1, ph: '~/.ssh/id_ed25519' })) + FORMAT;
   if (src === 'push') {
     const feed = k.feed || '';
     const pi = S.push || {};
@@ -579,10 +783,85 @@ function statusSourceFields(k) {
       + field('Send to', `<div class="lastrun">${esc(url)}</div>`)
       + field('Token', `<div class="inrow"><input class="in mono" readonly value="${pi.token ? '••••••••••••••••' : 'starting…'}"><button class="btn" data-act="copyToken">${gi('copy')}Copy</button></div>`)
       + (pi.error ? `<div class="help" style="color:var(--danger)">${esc(pi.error)}</div>` : '')
-      + `<div class="help">PowerShell example:<div class="lastrun">$t = Get-Content "$env:APPDATA\\Deckwell\\push-token.txt"\nInvoke-RestMethod -Method Post ${esc(url)} -Headers @{ Authorization = "Bearer $t" } -Body '72%|4 cores|0.72'</div><a href="#" data-act="docs" data-doc="status-tiles">More examples</a></div>`;
+      + `<div class="help">PowerShell example:<div class="lastrun">$t = Get-Content "$env:APPDATA\\Deckwell\\push-token.txt"\nInvoke-RestMethod -Method Post ${esc(url)} -Headers @{ Authorization = "Bearer $t" } -Body ${panel ? "(Get-Process | Out-String)" : "'72%|4 cores|0.72'"}</div><a href="#" data-act="docs" data-doc="status-tiles">More examples</a></div>`;
   }
   return h;
 }
+/* ---------------- window snap helpers ---------------- */
+function refreshMonitors() { return call('getMonitors', {}).then(r => { S.monitors = r || []; const k = selKey(); if (k && (k.type === 'snap')) renderInspector(); }).catch(() => {}); }
+function monitorOptions(cur) {
+  cur = cur || 'current';
+  const opts = [['current', 'Where the window is now'], ['main', 'Main monitor']].concat(S.monitors.map(m => [m.id, `${m.name} · ${m.w}×${m.h}${m.main ? ' · main' : ''}`]));
+  if (!opts.some(o => o[0] === cur)) opts.push([cur, 'Unplugged display (uses main)']);
+  return opts.map(([v, n]) => `<option value="${esc(v)}"${v === cur ? ' selected' : ''}>${esc(n)}</option>`).join('');
+}
+function spotList(mon) { const m = zoneMonitor(mon); return SPOTS.concat(m ? zonesOf(m.id).map(z => ['zone:' + z.id, z.name, z.x, z.y, z.w, z.h, true]) : []); }
+function spotOptions(cur, mon) { return spotList(mon).map(([v, n]) => `<option value="${esc(v)}"${v === cur ? ' selected' : ''}>${esc(n)}</option>`).join(''); }
+function spotGrid(k) {
+  const m = zoneMonitor(k.monitor) || mainMonitor() || { w: 16, h: 9 };
+  const ar = Math.max(.4, Math.min(.8, m.h / m.w));
+  return `<div class="spots">${spotList(k.monitor).map(([v, n, x, y, w, h, zone]) => `<button class="spot${v === k.spot ? ' on' : ''}" data-spot="${esc(v)}" title="${esc(n)}">
+    <i style="padding-top:${ar * 100}%"><b class="${zone ? 'zone' : ''}" style="left:${x * 100}%;top:${y * 100}%;width:${w * 100}%;height:${h * 100}%"></b></i><span>${esc(n)}</span></button>`).join('')}</div>`;
+}
+
+/* ---------------- custom zones (per monitor, drawn on a picture of it) ---------------- */
+let zoneMon = null, zoneSel = null, zoneDrag = null;
+function openZones(mon) {
+  const m = zoneMonitor(mon) || mainMonitor();
+  if (!m) { refreshMonitors().then(() => { if (S.monitors.length) openZones(mon); else toast('No monitors found'); }); return; }
+  zoneMon = m.id; zoneSel = null; renderZones();
+}
+function renderZones() {
+  const el = $('#zones'); const m = S.monitors.find(x => x.id === zoneMon) || zoneMonitor(zoneMon);
+  S.cfg.zones = S.cfg.zones || {};
+  const zs = zonesOf(zoneMon); const sel = zs.find(z => z.id === zoneSel);
+  const W = 640, H = Math.round(W * Math.max(.3, Math.min(1, m.h / m.w)));
+  el.innerHTML = `<div class="zone-card" role="dialog" aria-label="Custom zones"><div class="zone-head"><h2>Custom zones</h2><span class="spacer"></span><button class="btn accent" data-z="done">Done</button></div>
+    ${S.monitors.length > 1 ? `<div class="seg zone-mons">${S.monitors.map(x => `<button data-zm="${esc(x.id)}" class="${x.id === zoneMon ? 'on' : ''}">${esc(x.name)}</button>`).join('')}</div>` : ''}
+    <div class="help">Drag on the screen to draw a zone. Click a zone to rename or remove it. Zones show up in Snap window keys and the deck's window picker.</div>
+    <div class="zone-screen" id="zoneScreen" style="width:${W}px;height:${H}px">${zs.map(z => `<div class="zone${z.id === zoneSel ? ' sel' : ''}" data-zid="${esc(z.id)}" style="left:${z.x * 100}%;top:${z.y * 100}%;width:${z.w * 100}%;height:${z.h * 100}%"><span>${esc(z.name)}</span></div>`).join('')}
+      <div class="zone ghost" id="zoneGhost" hidden></div><div class="zone-res">${esc(m.name)} · ${m.w}×${m.h}</div></div>
+    ${sel ? `<div class="zone-edit"><input class="in" id="zoneName" maxlength="30" value="${esc(sel.name)}" spellcheck="false"><button class="btn danger" data-z="del">${gi('trash')}Remove</button></div>` : ''}</div>`;
+  el.hidden = false; hydrate(el);
+  const nm = el.querySelector('#zoneName');
+  if (nm) { nm.addEventListener('input', () => { sel.name = nm.value.trim() || 'Zone'; el.querySelectorAll(`[data-zid="${CSS.escape(sel.id)}"] span`).forEach(x => x.textContent = sel.name); coalescedCommit(); }); nm.addEventListener('keydown', e => e.stopPropagation()); }
+}
+function wireZones() {
+  const el = $('#zones');
+  el.addEventListener('click', e => {
+    const b = e.target.closest('[data-z],[data-zm]');
+    if (!b) { if (e.target.id === 'zones') closeZones(); return; }
+    if (b.dataset.zm) { zoneMon = b.dataset.zm; zoneSel = null; renderZones(); return; }
+    if (b.dataset.z === 'done') closeZones();
+    if (b.dataset.z === 'del') { S.cfg.zones[zoneMon] = zonesOf(zoneMon).filter(z => z.id !== zoneSel); zoneSel = null; commit(); renderZones(); }
+  });
+  el.addEventListener('mousedown', e => {
+    const scr = e.target.closest('#zoneScreen'); if (!scr || e.button !== 0) return;
+    const hit = e.target.closest('.zone[data-zid]');
+    if (hit) { zoneSel = hit.dataset.zid; renderZones(); return; }
+    const r = scr.getBoundingClientRect();
+    zoneDrag = { r, x0: (e.clientX - r.left) / r.width, y0: (e.clientY - r.top) / r.height };
+    e.preventDefault();
+  });
+  document.addEventListener('mousemove', e => {
+    if (!zoneDrag) return;
+    const g = $('#zoneGhost'); const d = zoneDrag;
+    const x1 = Math.max(0, Math.min(1, (e.clientX - d.r.left) / d.r.width)), y1 = Math.max(0, Math.min(1, (e.clientY - d.r.top) / d.r.height));
+    d.box = { x: Math.min(d.x0, x1), y: Math.min(d.y0, y1), w: Math.abs(x1 - d.x0), h: Math.abs(y1 - d.y0) };
+    g.hidden = false; Object.assign(g.style, { left: d.box.x * 100 + '%', top: d.box.y * 100 + '%', width: d.box.w * 100 + '%', height: d.box.h * 100 + '%' });
+  });
+  document.addEventListener('mouseup', () => {
+    if (!zoneDrag) return; const b = zoneDrag.box; zoneDrag = null;
+    if (!b || b.w < .05 || b.h < .05) { const g = $('#zoneGhost'); if (g) g.hidden = true; return; }
+    const r4 = v => Math.round(v * 1000) / 1000;
+    const z = { id: uid(), name: 'Zone ' + (zonesOf(zoneMon).length + 1), x: r4(b.x), y: r4(b.y), w: r4(b.w), h: r4(b.h) };
+    S.cfg.zones[zoneMon] = zonesOf(zoneMon).concat([z]); zoneSel = z.id; commit(); renderZones();
+    setTimeout(() => { const n = $('#zoneName'); if (n) { n.focus(); n.select(); } }, 0);
+  });
+  document.addEventListener('keydown', e => { if (!$('#zones').hidden && e.key === 'Escape') { closeZones(); e.stopImmediatePropagation(); } }, true);
+}
+function closeZones() { $('#zones').hidden = true; zoneDrag = null; renderInspector(); }
+
 const suffixInput = (f, v, suf) => `<div class="suffix"><input class="in" data-f="${f}" data-num="1" value="${esc(v)}" spellcheck="false"><span data-suf="${suf}"></span></div>`;
 function layoutSuffixes() {
   document.querySelectorAll('.suffix').forEach(w => {
@@ -633,7 +912,10 @@ function onInspectorInput(e) {
     let v = t.value;
     if (t.dataset.num) { v = parseFloat(v); if (isNaN(v)) return; }
     if (t.dataset.sf === 'sec') st.ms = Math.round(Math.max(0, Math.min(30, v)) * 1000); else st[t.dataset.sf] = v;
-    coalescedCommit(); return;
+    if (st.type === 'snap' && t.dataset.sf === 'monitor' && !spotList(v).some(x => x[0] === st.spot)) st.spot = 'left';
+    coalescedCommit();
+    if (t.tagName === 'SELECT' && ['monitor', 'program'].includes(t.dataset.sf)) renderInspector();
+    return;
   }
   if (!t.dataset.f) return;
   const tgt = S.sel.t === 'slider' ? p.strip[S.sel.i] : selKey(); if (!tgt) return;
@@ -641,6 +923,8 @@ function onInspectorInput(e) {
   if (t.dataset.num) { v = parseFloat(v); if (isNaN(v)) return; layoutSuffixes(); }
   tgt[t.dataset.f] = v;
   if (tgt.type === 'folder' && t.dataset.f === 'label') { const fp = page(tgt.target); if (fp) fp.name = v; renderSidebar(); }
+  if (t.dataset.f === 'monitor' && tgt.type === 'snap' && !spotList(v).some(x => x[0] === tgt.spot)) { tgt.spot = 'left'; coalescedCommit(); renderBoard(); renderInspector(); return; }
+  if (t.dataset.f === 'monitor' && tgt.type === 'snap') { coalescedCommit(); renderInspector(); return; }
   if (t.dataset.f === 'goPage') { if (!v) delete tgt.goPage; coalescedCommit(); renderBoard(); renderInspector(); return; }
   if (tgt.type === 'goto' && t.dataset.f === 'target') { const tp = page(v); if (tp && (tgt.label === 'Go to page' || S.cfg.pages.some(x => x.name === tgt.label))) tgt.label = tp.name; renderInspector(); }
   coalescedCommit(); renderBoard();
@@ -672,6 +956,8 @@ async function onInspectorClick(e) {
     const segEl = b.closest('[data-seg]'); const f = segEl.dataset.seg; const tgt = S.sel && S.sel.t === 'slider' ? p.strip[S.sel.i] : k;
     if (!tgt || segEl.classList.contains('disabled')) return;
     if (f === 'hostId' && b.dataset.v === '__add') return hostPopover(null, b);
+    if (f === 'hideTitles') { S.cfg.snap = Object.assign({}, S.cfg.snap, { hideTitles: b.dataset.v === 'true' }); commit(); renderInspector(); return; }
+    if (f === 'admin') { tgt.admin = b.dataset.v === 'true'; commit(); renderInspector(); return; }
     tgt[f] = b.dataset.v;
     if (f === 'control' && tgt.control !== 'app') { tgt.app = ''; tgt.appLabel = ''; }
     if (tgt.type === 'status' && f === 'metric' && ['CPU', 'RAM'].includes(tgt.title)) tgt.title = tgt.label = b.dataset.v.toUpperCase();
@@ -679,6 +965,21 @@ async function onInspectorClick(e) {
     commit(); renderBoard(); renderInspector(); return;
   }
   if (b.classList.contains('sess') && b.dataset.sess) { const s = p.strip[S.sel.i]; s.app = b.dataset.sess; s.appLabel = b.dataset.label; commit(); renderBoard(); renderInspector(); return; }
+  if (b.dataset.spot != null && k) {
+    const wasDefault = !k.label || k.label === spotName(k.spot, k.monitor);
+    k.spot = b.dataset.spot; if (wasDefault) k.label = spotName(k.spot, k.monitor);
+    commit(); renderBoard(); renderInspector(); return;
+  }
+  const sz = b.closest('[data-size]');
+  if (sz && b.dataset.d && k) {
+    const f = sz.dataset.size, max = f === 'pw' ? 4 : 3, old = sizeOf(k);
+    const v = Math.max(1, Math.min(max, (f === 'pw' ? old.w : old.h) + +b.dataset.d));
+    const w = f === 'pw' ? v : old.w, h = f === 'ph' ? v : old.h;
+    if (w === old.w && h === old.h) return;
+    if (w * h < 2) return toast('A panel is at least 2 keys');
+    if (!areaFree(p, k.row, k.col, w, h, k.id)) return toast(k.row + h > p.rows || k.col + w > p.cols ? 'Not enough room on the page. Add columns or rows, or move the panel.' : 'Other keys are in the way');
+    k.pw = w; k.ph = h; commit(); renderBoard(); renderInspector(); return;
+  }
   if (b.dataset.media && k) { k.type = 'media'; k.media = b.dataset.media; if (!k.label || k.label === 'Hotkey' || Object.values(MEDIA).some(m => m.lab === k.label)) k.label = MEDIA[k.media].lab; delete k.keys; commit(); renderBoard(); renderInspector(); return; }
   switch (b.dataset.act) {
     case 'fromExe': if (!k.exe) { const f = await call('pickFile', { kind: 'exe' }); if (!f) return; k.exe = f; if (k.label === 'App') k.label = exeName(f).replace(/\.exe$/i, ''); }
@@ -705,6 +1006,14 @@ async function onInspectorClick(e) {
     case 'stepExe': { const f = await call('pickFile', { kind: 'exe' }); if (f) { k.steps[+b.dataset.si].exe = f; commit(); renderInspector(); } break; }
     case 'stepScript': { const st = k.steps[+b.dataset.si]; const f = await call('pickFile', { kind: st.runtime === 'python' ? 'py' : 'ps1' }); if (f) { st.file = f; commit(); renderInspector(); } break; }
     case 'openGoPage': openPage(k.goPage); break;
+    case 'browseFolder': { const f = await call('pickFolder', {}); if (f) { k.folder = f; commit(); renderInspector(); } break; }
+    case 'browseSnapExe': { const f = await call('pickFile', { kind: 'exe' }); if (f) { k.exe = f; commit(); renderInspector(); } break; }
+    case 'editZones': openZones(b.dataset.mon || 'main'); break;
+    case 'captureLayout': {
+      try { const r = await call('captureLayout', {}); k.windows = r || []; commit(); renderAll(); toast(`Saved ${k.windows.length} window${k.windows.length === 1 ? '' : 's'}`); }
+      catch (err) { toast('Capture failed: ' + err.message); } break;
+    }
+    case 'dropWin': k.windows.splice(+b.dataset.i, 1); commit(); renderAll(); break;
     case 'copyToken': { const pi = S.push || {}; if (!pi.token) return toast('The push server is still starting'); try { await navigator.clipboard.writeText(pi.token); toast('Token copied'); } catch { toast('Couldn\'t copy. The token is in %APPDATA%\\Deckwell\\push-token.txt'); } break; }
     case 'docs': e.preventDefault(); call('openDocs', { page: b.dataset.doc || '' }); break;
     case 'newGoPage': {
@@ -718,7 +1027,7 @@ async function onInspectorClick(e) {
   }
 }
 function duplicateKey(k) {
-  const p = curPage(); const f = firstFree(p, span(k)); if (!f) return toast('No free keys on this page');
+  const p = curPage(); const f = firstFree(p, sizeOf(k)); if (!f) return toast('No free keys on this page');
   const c = clone(k); c.id = uid(); c.row = f[0]; c.col = f[1]; delete c.lastRun; (c.steps || []).forEach(s => s.id = uid());
   if (c.type === 'folder') { const src = page(k.target); const np = clone(src); np.id = uid(); np.name = src.name + ' copy'; np.keys.forEach(x => x.id = uid()); S.cfg.pages.push(np); c.target = np.id; c.label = np.name; }
   p.keys.push(c); S.sel = { t: 'key', id: c.id }; commit(); renderAll();
@@ -802,7 +1111,7 @@ function hostPopover(h, anchor) {
       h.name = pop.querySelector('#hpName').value.trim(); h.address = pop.querySelector('#hpAddr').value.trim();
       h.user = pop.querySelector('#hpUser').value.trim(); h.port = parseInt(pop.querySelector('#hpPort').value) || 22;
       if (!h.name || !h.address) return toast('Name and address are required');
-      if (isNew) { S.cfg.hosts.push(h); const k = selKey(); if (k && (k.type === 'ssh' || k.type === 'status')) k.hostId = h.id; }
+      if (isNew) { S.cfg.hosts.push(h); const k = selKey(); if (k && ['ssh', 'status', 'panel', 'terminal'].includes(k.type)) k.hostId = h.id; }
       commit(); hidePopover(); renderAll();
     };
     const del = pop.querySelector('#hpDel');
@@ -828,7 +1137,10 @@ function devDiagHTML() {
 function devicePopover(anchor) {
   const mode = S.cfg.linkMode || 'auto';
   const rename = S.dev.connected ? `<div class="field"><label>Deck name</label><div class="inrow"><input class="in" id="dpName" maxlength="40" value="${esc(S.dev.name)}" spellcheck="false"><button class="btn" id="dpRename">Save</button></div></div>` : '';
-  showPopover(`${rename}<div class="field"><label>Connection</label>${seg('linkMode', [['auto', 'Auto'], ['wifi', 'Wi-Fi only'], ['usb', 'USB only']], mode)}</div>
+  const orient = S.cfg.orient || 'landscape';
+  showPopover(`${rename}<div class="field"><label>Deck orientation</label>${seg('orient', [['landscape', 'Landscape'], ['portrait', 'Portrait'], ['auto', 'Auto rotate']], orient)}</div>
+    <div class="help">Auto rotate turns with the tablet. Each page gets a portrait layout made from its landscape one.</div>
+    <div class="field"><label>Connection</label>${seg('linkMode', [['auto', 'Auto'], ['wifi', 'Wi-Fi only'], ['usb', 'USB only']], mode)}</div>
     <div class="help">Auto tries Wi-Fi first and falls back to USB. Force one if Auto keeps picking the wrong link.</div>
     <div class="field"><label>Deck IP (optional)</label><input class="in mono" id="dpIp" value="${esc(S.cfg.deckIp || '')}" placeholder="auto-detected on Wi-Fi"></div>
     <div class="help">The deck's IP is shown on its "Can't reach desktop" screen.</div>
@@ -840,6 +1152,13 @@ function devicePopover(anchor) {
       S.cfg.linkMode = b.dataset.v; commit({ now: 1 });
       pop.querySelectorAll('[data-seg="linkMode"] button').forEach(x => x.classList.toggle('on', x === b));
       renderDevice(); refreshDiag();
+    });
+    pop.querySelector('[data-seg="orient"]').addEventListener('click', e => {
+      const b = e.target.closest('button'); if (!b) return;
+      S.cfg.orient = b.dataset.v; commit({ now: 1 });
+      pop.querySelectorAll('[data-seg="orient"] button').forEach(x => x.classList.toggle('on', x === b));
+      if (b.dataset.v !== 'auto') S.view = b.dataset.v;
+      renderAll();
     });
     pop.querySelector('#dpRe').onclick = () => { call('reconnect', {}); toast('Reconnecting…'); };
     const rn = pop.querySelector('#dpRename');
@@ -895,13 +1214,24 @@ function wire() {
   const stepper = (id, f, min, max) => $(id).addEventListener('click', e => { const b = e.target.closest('button'); if (!b) return; const p = curPage(); const v = Math.max(min, Math.min(max, p[f] + +b.dataset.d)); if (v === p[f]) return; p[f] = v; if (S.sel && S.sel.t === 'key') { const k = selKey(); if (k && (k.row >= p.rows || k.col >= p.cols)) S.sel = null; } commit(); renderAll(); });
   stepper('#colStep', 'cols', 1, 8); stepper('#rowStep', 'rows', 1, 6);
   $('#sliderSeg').addEventListener('click', e => { const b = e.target.closest('button'); if (!b) return; const p = curPage(); p.sliders = b.dataset.v; ensureStrip(p); if (p.sliders === 'off' && S.sel && S.sel.t === 'slider') S.sel = null; commit(); renderAll(); });
+  $('#viewSeg').addEventListener('click', e => { const b = e.target.closest('button'); if (!b || S.view === b.dataset.v) return; S.view = b.dataset.v; if (S.view === 'portrait') S.emptyCell = null; renderAll(); });
+  $('#orderSeg').addEventListener('click', e => { const b = e.target.closest('button'); if (!b) return; const p = curPage(); p.porder = b.dataset.v; commit(); renderAll(); });
+  $('#pSliderSeg').addEventListener('click', e => {
+    const b = e.target.closest('button'); if (!b) return; const p = curPage();
+    if (b.dataset.v === 'off') { p.sliders = 'off'; if (S.sel && S.sel.t === 'slider') S.sel = null; }
+    else { p.pside = b.dataset.v; if (!stripSide(p)) p.sliders = 'right'; }
+    ensureStrip(p); commit(); renderAll();
+  });
   $('#sliderStep').addEventListener('click', e => { const b = e.target.closest('button'); if (!b) return; const p = curPage(); setSliderCount(p, p.strip.length + +b.dataset.d); });
   // board
   const board = $('#boardInner');
   board.addEventListener('click', e => {
-    const sl = e.target.closest('.sl'); if (sl) { if (sl.classList.contains('empty')) addSlider(+sl.dataset.slot); else { S.sel = { t: 'slider', i: +sl.dataset.slot }; renderBoard(); renderInspector(); } return; }
+    const sl = e.target.closest('.sl,.slh'); if (sl) { if (sl.classList.contains('empty')) addSlider(+sl.dataset.slot); else { S.sel = { t: 'slider', i: +sl.dataset.slot }; renderBoard(); renderInspector(); } return; }
     const k = e.target.closest('.k'); if (!k) return;
-    if (k.classList.contains('empty')) { S.sel = null; S.emptyCell = [+k.dataset.r, +k.dataset.c]; renderBoard(); renderInspector(); return; }
+    if (k.classList.contains('empty')) {
+      if (portraitView()) { S.sel = null; S.emptyCell = null; renderBoard(); renderInspector(); return toast('Portrait follows the landscape layout. Switch to Landscape to place keys.'); }
+      S.sel = null; S.emptyCell = [+k.dataset.r, +k.dataset.c]; renderBoard(); renderInspector(); return;
+    }
     if (k.dataset.key === '__back') return;
     if (S.recording) stopRecording(true);
     S.sel = { t: 'key', id: k.dataset.key }; renderBoard(); renderInspector();
@@ -924,23 +1254,29 @@ function wire() {
   document.addEventListener('dragover', e => {
     if (!drag) return;
     document.querySelectorAll('.dropok,.drop').forEach(x => x.classList.remove('dropok', 'drop'));
-    const k = e.target.closest('#boardInner .k'); const sl = e.target.closest('#boardInner .sl'); const pg = e.target.closest('.pg');
+    const k = e.target.closest('#boardInner .k'); const sl = e.target.closest('#boardInner .sl,#boardInner .slh'); const pg = e.target.closest('.pg');
     if (drag.add === 'slider') { if (sl) { sl.classList.add('dropok'); e.preventDefault(); } return; }
-    if (k && k.dataset.key !== '__back') { k.classList.add('dropok'); e.preventDefault(); }
+    if (portraitView() && !pg) return; // portrait is a preview of the landscape grid
+    if (k && !(drag.move === '__back' && drag.from !== S.pageId)) { k.classList.add('dropok'); e.preventDefault(); }
     else if (pg && drag.move && pg.dataset.page !== S.pageId) { pg.classList.add('drop'); e.preventDefault(); }
   });
   document.addEventListener('drop', e => {
     if (!drag) return; e.preventDefault();
     const d = drag; drag = null;
-    const k = e.target.closest('#boardInner .k'); const sl = e.target.closest('#boardInner .sl'); const pg = e.target.closest('.pg');
+    const k = e.target.closest('#boardInner .k'); const sl = e.target.closest('#boardInner .sl,#boardInner .slh'); const pg = e.target.closest('.pg');
     document.querySelectorAll('.dropok,.drop').forEach(x => x.classList.remove('dropok', 'drop'));
     if (d.add === 'slider') { if (sl) { const i = +sl.dataset.slot; if (curPage().strip[i]) { curPage().strip[i] = null; } addSlider(i); } return; }
     if (d.add && k) return placeNew(d.add, +k.dataset.r, +k.dataset.c);
+    if (d.move === '__back') {
+      if (k && d.from === S.pageId) return moveBack(curPage(), +k.dataset.r, +k.dataset.c);
+      if (pg) toast('Back stays in its folder');
+      return;
+    }
     if (d.move) {
       const from = page(d.from); const key = from.keys.find(x => x.id === d.move); if (!key) return;
       if (k) return moveKey(key, from, curPage(), +k.dataset.r, +k.dataset.c);
       if (pg) { const to = page(pg.dataset.page); if (key.type === 'folder' && (key.target === to.id || isDescendant(to.id, key.target))) return toast("Can't move a folder into itself");
-        const f = firstFree(to, span(key)); if (!f) return toast(`No free keys on ${to.name}`); moveKey(key, from, to, f[0], f[1]); toast(`Moved to ${to.name}`); }
+        const f = firstFree(to, sizeOf(key)); if (!f) return toast(`No free keys on ${to.name}`); moveKey(key, from, to, f[0], f[1]); toast(`Moved to ${to.name}`); }
     }
   });
   // palette click = add to selected empty cell or first free
@@ -972,6 +1308,7 @@ function wire() {
   on('synced', d => { if (S.sync !== 'pending') { S.sync = d.deck ? 'ok' : 'off'; renderSync(); } });
   on('np', d => { S.live.np = d; renderBoardLive(); });
   on('status', d => { S.live.status[d.id] = d; renderBoardLive(); });
+  on('panel', d => { S.live.panel[d.id] = d; renderBoardLive(); });
   on('sliders', d => { Object.assign(S.live.sliders, d); renderBoardLive(); });
   on('sessions', d => { S.sessions = d || []; if (S.sel && S.sel.t === 'slider') renderInspector(); });
   on('keyResult', d => { for (const p of S.cfg.pages) { const k = p.keys.find(x => x.id === d.id); if (k && d.lastRun) { k.lastRun = d.lastRun; commit({ silent: true }); if (selKey() === k) renderInspector(); } } });
@@ -1045,6 +1382,12 @@ const Demo = {
       case 'pickFile': return a.kind === 'exe' ? 'C:\\Program Files\\App\\app.exe' : 'C:\\scripts\\job.' + a.kind;
       case 'runKey': return { ok: true, text: 'Ran ' + (a.key.label || 'key') };
       case 'pushInfo': return { port: 8770, token: 'demo-token-0000000000000000' };
+      case 'getMonitors': return [{ id: '\\\\.\\DISPLAY1', name: 'Display 1', x: 0, y: 0, w: 2560, h: 1440, main: true }, { id: '\\\\.\\DISPLAY2', name: 'Display 2', x: 2560, y: 180, w: 1920, h: 1080, main: false }];
+      case 'wtProfiles': return ['Windows PowerShell', 'Command Prompt', 'Ubuntu', 'Azure Cloud Shell'];
+      case 'pickFolder': return 'C:\\Projects';
+      case 'captureLayout': return [{ exe: 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe', app: 'Google Chrome', title: 'Deckwell', monitor: '\\\\.\\DISPLAY1', monName: 'Display 1', max: false, x: 0, y: 0, w: .5, h: 1 },
+        { exe: 'C:\\Users\\demo\\AppData\\Local\\Programs\\Microsoft VS Code\\Code.exe', app: 'Visual Studio Code', title: 'Hub.cs', monitor: '\\\\.\\DISPLAY1', monName: 'Display 1', max: false, x: .5, y: 0, w: .5, h: 1 },
+        { exe: 'C:\\Users\\demo\\AppData\\Roaming\\Spotify\\Spotify.exe', app: 'Spotify', title: 'Spotify Premium', monitor: '\\\\.\\DISPLAY2', monName: 'Display 2', max: true, x: 0, y: 0, w: 1, h: 1 }];
       default: return null;
     }
   },
@@ -1066,6 +1409,9 @@ const Demo = {
   S.cfg = valid ? st.config : defaultConfig();
   S.cfg.pages.forEach(p => { p.strip = p.strip || [null, null, null]; p.keys = p.keys || []; ensureStrip(p); });
   S.cfg.hosts = S.cfg.hosts || [];
+  if (!S.cfg.orient) S.cfg.orient = 'landscape';
+  S.view = S.cfg.orient === 'portrait' ? 'portrait' : 'landscape';
+  call('getMonitors', {}).then(r => { S.monitors = r || []; }).catch(() => {});
   if (st && st.device) S.dev = Object.assign(S.dev, st.device);
   S.sessions = (st && st.sessions) || [];
   call('pushInfo', {}).then(r => { S.push = r || {}; const k = selKey(); if (k && k.type === 'status') renderInspector(); }).catch(() => {});
@@ -1075,7 +1421,7 @@ const Demo = {
   if (valid && S.cfg.migratedFromV1) { delete S.cfg.migratedFromV1; S.lastSnap = JSON.stringify(S.cfg); save(); setTimeout(() => toast('Imported your v1 layout'), 600); }
   if (!HOST) Demo.start();
   renderAll();
-  wireIntro();
+  wireIntro(); wireZones();
   if (!S.cfg.introSeen) showIntro(0);
   if (document.fonts) document.fonts.ready.then(() => { layoutSuffixes(); fitBoard(); });
 })();

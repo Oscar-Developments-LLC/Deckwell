@@ -23,7 +23,7 @@ static class AppWindows
     const int GWL_EXSTYLE = -20, WS_EX_TOOLWINDOW = 0x80, DWMWA_CLOAKED = 14;
 
     /// Real app windows in z-order (topmost first).
-    static List<(IntPtr hwnd, uint pid)> TopLevel()
+    internal static List<(IntPtr hwnd, uint pid)> TopLevel()
     {
         var list = new List<(IntPtr, uint)>();
         EnumWindows((h, _) =>
