@@ -109,6 +109,8 @@ Messages are signed, **not encrypted**. Someone on the network can read the layo
 
 `panel`, `winpick` and `snap` were added in 1.1. A deck or desktop that doesn't know a message type ignores it.
 
+**Sliders.** While a slider is dragged, the deck sends `{"t":"set","id":"<slider id>","value":0-100}` at most every 30 ms. A move that lands inside that gap is sent when the gap ends, so the newest position always arrives, even if the finger stops without lifting. The final position is sent again on release. The desktop applies only the newest value per slider (older ones still waiting are dropped) and ignores its own volume readings for that slider for 700 ms, so the slider doesn't jump back.
+
 ### Layout pages
 
 Each page in `layout.pages` has `cols` (1-8), `rows` (1-6), `keys`, and:

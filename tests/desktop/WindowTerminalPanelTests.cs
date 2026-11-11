@@ -128,3 +128,29 @@ public class PanelParseTests
         Assert.Equal("panel", m["t"]!.GetValue<string>()); Assert.Equal("a\nb", m["text"]!.GetValue<string>()); Assert.False(m["up"]!.GetValue<bool>());
     }
 }
+
+public class LatestValuesTests
+{
+    [Fact]
+    public void KeepsOnlyTheNewestValuePerSlider()
+    {
+        var q = new LatestValues<string, float>();
+        for (int i = 0; i <= 100; i++) q.Set("master", i / 100f); // a fast drag from 0 to 100
+        q.Set("spotify", 0.3f); q.Set("spotify", 0.25f);
+        var got = q.TakeAll().ToDictionary(kv => kv.Key, kv => kv.Value);
+        Assert.Equal(2, got.Count);
+        Assert.Equal(1f, got["master"]);
+        Assert.Equal(0.25f, got["spotify"]);
+        Assert.True(q.IsEmpty);
+        Assert.Empty(q.TakeAll());
+    }
+
+    [Fact]
+    public void SafeFromManyThreads()
+    {
+        var q = new LatestValues<string, int>();
+        Parallel.For(0, 10000, i => q.Set("s" + (i % 4), i));
+        var got = q.TakeAll();
+        Assert.Equal(4, got.Count);
+    }
+}

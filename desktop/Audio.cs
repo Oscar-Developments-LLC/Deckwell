@@ -6,6 +6,10 @@ using NAudio.CoreAudioApi;
 namespace Deckwell;
 
 /// Master / per-app / mic volume. All Core Audio calls happen on one MTA worker thread.
+///
+/// Slider moves from the deck are applied as fast as they arrive: only the newest position per slider is used
+/// (LatestValues), and the default devices and app sessions stay open between moves instead of being looked up
+/// again each time. The worker reads the volumes back every 400 ms to follow changes made in Windows.
 sealed class Audio : IDisposable
 {
     public record Slider(string Id, string Control, string App, double Step);
@@ -19,7 +23,13 @@ sealed class Audio : IDisposable
     volatile Slider[] _sliders = Array.Empty<Slider>();
     readonly Dictionary<string, State> _last = new();
     readonly ConcurrentDictionary<string, DateTime> _holdUntil = new();
+    readonly LatestValues<string, float> _moves = new();
     string _sessionsSig = "";
+
+    // Owned by the worker thread only.
+    MMDevice? _render, _capture;
+    List<AudioSessionControl> _sessions = new();
+    DateTime _sessionsAt = DateTime.MinValue;
 
     public event Action<Dictionary<string, State>>? SlidersChanged;
     public event Action<List<Session>>? SessionsChanged;
@@ -37,7 +47,7 @@ sealed class Audio : IDisposable
         var list = new List<Slider>();
         foreach (var p in Json.Arr(config, "pages"))
             foreach (var s in (p["strip"] as JsonArray ?? new JsonArray()))
-                if (s != null) list.Add(new Slider(Json.S(s, "id"), Json.S(s, "control", "master"), Json.S(s, "app"), Json.D(s, "step", 2)));
+                if (s != null) list.Add(new Slider(Json.S(s, "id"), Json.S(s, "control", "master"), Json.S(s, "app"), Json.D(s, "step", 1)));
         _sliders = list.ToArray();
         lock (_last) _last.Clear();
         _wake.Set();
@@ -51,7 +61,7 @@ sealed class Audio : IDisposable
         float v = (float)Math.Clamp(value / 100.0, 0, 1);
         _holdUntil[sliderId] = DateTime.UtcNow.AddMilliseconds(700);
         lock (_last) if (_last.TryGetValue(sliderId, out var old)) _last[sliderId] = old with { Value = (int)Math.Round(value) };
-        _work.Enqueue(en => Apply(en, s, dev => dev.AudioEndpointVolume.MasterVolumeLevelScalar = v, sv => sv.Volume = v));
+        _moves.Set(sliderId, v); // replaces any older position that hasn't been applied yet
         _wake.Set();
     }
 
@@ -120,29 +130,100 @@ sealed class Audio : IDisposable
     {
         using var en = new MMDeviceEnumerator();
         var lastSessions = DateTime.MinValue;
+        var nextPoll = DateTime.MinValue;
         while (!_stop)
         {
+            // Slider moves first, every time the worker wakes. Polling only runs on its own 400 ms beat,
+            // so a stream of moves is never held up behind it.
+            ApplyMoves(en);
             while (_work.TryDequeue(out var job)) job(en);
-            try { Poll(en, DateTime.UtcNow - lastSessions > TimeSpan.FromSeconds(2)); } catch (Exception e) { Log.Write("audio poll: " + e.Message); }
-            if (DateTime.UtcNow - lastSessions > TimeSpan.FromSeconds(2)) lastSessions = DateTime.UtcNow;
-            _wake.WaitOne(400);
+            var now = DateTime.UtcNow;
+            if (now >= nextPoll)
+            {
+                bool refresh = now - lastSessions > TimeSpan.FromSeconds(2);
+                try { Poll(en, refresh); } catch (Exception e) { Log.Write("audio poll: " + e.Message); DropDevices(); }
+                if (refresh) lastSessions = now;
+                nextPoll = DateTime.UtcNow.AddMilliseconds(400);
+            }
+            var wait = nextPoll - DateTime.UtcNow;
+            _wake.WaitOne(wait > TimeSpan.Zero ? wait : TimeSpan.Zero);
         }
+        DropDevices();
+    }
+
+    /// Sets the newest position of every slider that moved. Uses the open devices and sessions, so each call is quick.
+    void ApplyMoves(MMDeviceEnumerator en)
+    {
+        if (_moves.IsEmpty) return;
+        var sliders = _sliders;
+        foreach (var (id, v) in _moves.TakeAll())
+        {
+            var s = sliders.FirstOrDefault(x => x.Id == id); if (s == null) continue;
+            try
+            {
+                if (s.Control == "master") Render(en).AudioEndpointVolume.MasterVolumeLevelScalar = v;
+                else if (s.Control == "mic") { var mic = Capture(en); if (mic != null) mic.AudioEndpointVolume.MasterVolumeLevelScalar = v; }
+                else
+                {
+                    var hits = _sessions.Where(x => Matches(x, s.App)).ToList();
+                    // The app may have started playing since the last look. Look again, but at most twice a second.
+                    if (hits.Count == 0 && DateTime.UtcNow - _sessionsAt > TimeSpan.FromMilliseconds(500)) { RefreshSessions(en); hits = _sessions.Where(x => Matches(x, s.App)).ToList(); }
+                    foreach (var ses in hits) ses.SimpleAudioVolume.Volume = v;
+                }
+            }
+            catch (Exception e) { Log.Write("audio set: " + e.Message); DropDevices(); } // a device went away; open the new default next time
+        }
+    }
+
+    MMDevice Render(MMDeviceEnumerator en) => _render ??= en.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
+    MMDevice? Capture(MMDeviceEnumerator en)
+    {
+        if (_capture != null) return _capture;
+        try { return _capture = en.GetDefaultAudioEndpoint(DataFlow.Capture, Role.Multimedia); } catch { return null; } // no mic
+    }
+
+    /// Re-reads the app sessions on the current output device.
+    void RefreshSessions(MMDeviceEnumerator en)
+    {
+        foreach (var x in _sessions) x.Dispose();
+        _sessions = new List<AudioSessionControl>();
+        var mgr = Render(en).AudioSessionManager; mgr.RefreshSessions();
+        for (int i = 0; i < mgr.Sessions.Count; i++) _sessions.Add(mgr.Sessions[i]);
+        _sessionsAt = DateTime.UtcNow;
+    }
+
+    /// Follows a change of default device (headphones plugged in, and so on): reopens it if it's a different one.
+    void FollowDefaults(MMDeviceEnumerator en)
+    {
+        var r = en.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
+        if (_render != null && _render.ID == r.ID) r.Dispose();
+        else { foreach (var x in _sessions) x.Dispose(); _sessions = new(); _sessionsAt = DateTime.MinValue; _render?.Dispose(); _render = r; }
+        MMDevice? c = null;
+        try { c = en.GetDefaultAudioEndpoint(DataFlow.Capture, Role.Multimedia); } catch { }
+        if (c == null) { _capture?.Dispose(); _capture = null; }
+        else if (_capture != null && _capture.ID == c.ID) c.Dispose();
+        else { _capture?.Dispose(); _capture = c; }
+    }
+
+    void DropDevices()
+    {
+        foreach (var x in _sessions) { try { x.Dispose(); } catch { } }
+        _sessions = new(); _sessionsAt = DateTime.MinValue;
+        try { _render?.Dispose(); } catch { }
+        try { _capture?.Dispose(); } catch { }
+        _render = null; _capture = null;
     }
 
     void Poll(MMDeviceEnumerator en, bool refreshSessions)
     {
         var sliders = _sliders;
-        using var render = en.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
-        MMDevice? mic = null;
-        try { mic = en.GetDefaultAudioEndpoint(DataFlow.Capture, Role.Multimedia); } catch { }
+        FollowDefaults(en);
+        var render = Render(en);
+        var mic = _capture;
         // Walking the session list creates a pile of COM objects, so only do it when an app slider needs it
         // (every poll) or when the editor's app list is due a refresh (every 2 s).
-        var sesList = new List<AudioSessionControl>();
-        if (refreshSessions || sliders.Any(s => s.Control is not ("master" or "mic")))
-        {
-            var mgr = render.AudioSessionManager; mgr.RefreshSessions();
-            for (int i = 0; i < mgr.Sessions.Count; i++) sesList.Add(mgr.Sessions[i]);
-        }
+        if (refreshSessions || sliders.Any(s => s.Control is not ("master" or "mic"))) RefreshSessions(en);
+        var sesList = _sessions;
 
         var changed = new Dictionary<string, State>();
         foreach (var s in sliders)
@@ -158,7 +239,6 @@ sealed class Audio : IDisposable
             if (_holdUntil.TryGetValue(s.Id, out var until) && DateTime.UtcNow < until) continue;
             lock (_last) { if (!_last.TryGetValue(s.Id, out var old) || old != st) { _last[s.Id] = st; changed[s.Id] = st; } }
         }
-        mic?.Dispose();
         if (changed.Count > 0) SlidersChanged?.Invoke(changed);
 
         if (refreshSessions)
@@ -169,7 +249,6 @@ sealed class Audio : IDisposable
             if (sig != _sessionsSig) { _sessionsSig = sig; Sessions = names.Select(n => new Session(n, Pretty(n))).ToList(); SessionsChanged?.Invoke(Sessions); }
             lock (ProcNames) if (ProcNames.Count > 500) ProcNames.Clear();
         }
-        foreach (var x in sesList) x.Dispose();
     }
 
     public void Dispose() { _stop = true; _wake.Set(); }

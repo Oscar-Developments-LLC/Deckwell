@@ -643,6 +643,18 @@ class DeckView(ctx: Context, private val res: Res, private val cb: Callbacks) : 
     private var dragSlider: DSlider? = null
     private var dragValue = 0
     private var lastSliderSend = 0L
+    /** Sliders send at most every SLIDER_MS while dragging. A move that lands inside that gap is sent when it ends,
+     *  so the PC always gets the newest position, even if the finger stops without lifting. */
+    private val SLIDER_MS = 30L
+    private var sliderLate: Runnable? = null
+    private val sliderHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private fun sendSlider(s: DSlider, v: Int, now: Long) {
+        sliderLate?.let { sliderHandler.removeCallbacks(it) }; sliderLate = null
+        val wait = SLIDER_MS - (now - lastSliderSend)
+        if (wait <= 0) { cb.slider(s, v); lastSliderSend = now; return }
+        sliderLate = Runnable { sliderLate = null; if (dragSlider?.id == s.id && dragValue == v) { cb.slider(s, v); lastSliderSend = android.os.SystemClock.uptimeMillis() } }
+            .also { sliderHandler.postDelayed(it, wait) }
+    }
     private var downX = 0f; private var downY = 0f
     private var swiping = false
     private var pageOffset = 0f
@@ -712,7 +724,7 @@ class DeckView(ctx: Context, private val res: Res, private val cb: Callbacks) : 
             MotionEvent.ACTION_MOVE -> {
                 dragSlider?.let { s ->
                     val v = sliderValue(s, x, y)
-                    if (v != dragValue) { dragValue = v; invalidate(); if (e.eventTime - lastSliderSend > 40) { cb.slider(s, v); lastSliderSend = e.eventTime } }
+                    if (v != dragValue) { dragValue = v; invalidate(); sendSlider(s, v, e.eventTime) }
                     return true
                 }
                 scrollPanel?.let { k ->
@@ -738,7 +750,7 @@ class DeckView(ctx: Context, private val res: Res, private val cb: Callbacks) : 
                 }
             }
             MotionEvent.ACTION_UP -> {
-                dragSlider?.let { s -> cb.slider(s, dragValue); sliders[s.id] = SliderState(dragValue, sliders[s.id]?.enabled ?: true, sliders[s.id]?.muted ?: false); dragSlider = null; holdIncoming[s.id] = e.eventTime + 900; invalidate(); return true }
+                dragSlider?.let { s -> sliderLate?.let { sliderHandler.removeCallbacks(it) }; sliderLate = null; cb.slider(s, dragValue); sliders[s.id] = SliderState(dragValue, sliders[s.id]?.enabled ?: true, sliders[s.id]?.muted ?: false); dragSlider = null; holdIncoming[s.id] = e.eventTime + 900; invalidate(); return true }
                 pressedSliderBtn?.let { s -> if (sliderAt(pg, x, y, button = true)?.id == s.id) cb.sliderButton(s); pressedSliderBtn = null; invalidate(); return true }
                 if (scrollPanel != null) { scrollPanel = null; return true }
                 if (swiping) { finishSwipe(lay, pg); return true }

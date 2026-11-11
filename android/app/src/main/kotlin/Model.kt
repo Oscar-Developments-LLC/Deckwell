@@ -35,7 +35,7 @@ class DKey(
 
 class DSlider(val id: String, val label: String, val control: String, val button: String, val step: Double) {
     companion object {
-        fun parse(o: JSONObject) = DSlider(o.optString("id"), o.optString("label"), o.optString("control", "master"), o.optString("button", "mute"), o.optDouble("step", 2.0))
+        fun parse(o: JSONObject) = DSlider(o.optString("id"), o.optString("label"), o.optString("control", "master"), o.optString("button", "mute"), o.optDouble("step", 1.0))
     }
 }
 

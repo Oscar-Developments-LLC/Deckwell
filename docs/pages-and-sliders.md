@@ -45,7 +45,7 @@ More sliders make the strip wider, and the keys shrink to make room. On a small 
 
 **Slider settings:**
 
-- **Step:** how much one notch moves the volume (for example 2%).
+- **Step:** how far apart the slider's positions are. **1%** (the default) matches the Windows volume slider. A bigger step, like 5%, snaps to rounder numbers.
 - **Button below:** a **Mute toggle** under the slider, or **None**.
 
 If you pick an app that isn't running, its slider greys out on the deck until the app plays sound again.

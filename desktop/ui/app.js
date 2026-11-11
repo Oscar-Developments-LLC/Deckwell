@@ -493,7 +493,7 @@ function addSlider(slot) {
   if (slot == null) slot = p.strip.findIndex(s => !s);
   if (slot < 0 && p.strip.length < DECK.maxSliders) { p.strip.push(null); slot = p.strip.length - 1; }
   if (slot < 0) return toast(`The slider strip is full (${DECK.maxSliders} max)`);
-  p.strip[slot] = { id: uid(), control: 'master', app: '', appLabel: '', step: 2, button: 'mute' };
+  p.strip[slot] = { id: uid(), control: 'master', app: '', appLabel: '', step: 1, button: 'mute' };
   S.sel = { t: 'slider', i: slot }; commit(); renderAll();
 }
 /** Drag the Back key to another spot in its folder. Dropping it on a one-key-sized key swaps the two. */
