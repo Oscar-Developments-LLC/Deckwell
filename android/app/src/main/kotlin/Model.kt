@@ -107,9 +107,13 @@ class WinItem(val id: String, val app: String, val title: String?, val icon: Str
 class SnapZone(val id: String, val name: String, val x: Double, val y: Double, val w: Double, val h: Double)
 class Monitor(val id: String, val name: String, val x: Int, val y: Int, val w: Int, val h: Int, val main: Boolean, val zones: List<SnapZone>)
 class WinPick(val key: String, val wins: List<WinItem>, val mons: List<Monitor>) {
-    /** Step 2 starts once a window is picked. */
+    /** Steps: 1 window, 2 display (skipped with one display), 3 size (Maximize, Half, ...), 4 the spot inside that size. */
     var win: WinItem? = null
     var mon = mons.indexOfFirst { it.main }.coerceAtLeast(0)
+    /** True once a display is chosen, or right away when there's only one. */
+    var monPicked = false
+    /** The size picked on step 3 (a Group id, or "zones"). Null while on step 3. */
+    var group: String? = null
     var scroll = 0f
 
     companion object {
@@ -138,6 +142,19 @@ class WinPick(val key: String, val wins: List<WinItem>, val mons: List<Monitor>)
             Spot("tl", "Top left", 0.0, 0.0, 0.5, 0.5), Spot("tr", "Top right", 0.5, 0.0, 0.5, 0.5), Spot("bl", "Bottom left", 0.0, 0.5, 0.5, 0.5), Spot("br", "Bottom right", 0.5, 0.5, 0.5, 0.5),
             Spot("center", "Center", 0.15, 0.1, 0.7, 0.8),
         )
+        fun spot(id: String): Spot? = SPOTS.firstOrNull { it.id == id }
+
+        /** Sizes on step 3. A size with one spot moves the window right away; the others open step 4.
+         *  [preview] is what its tile draws. A monitor's own zones are added after these as "Your zones". */
+        val GROUPS = listOf(
+            Group("max", "Maximize", "", listOf("max"), listOf("max")),
+            Group("half", "Half", "Which half?", listOf("left", "right", "top", "bottom"), listOf("left", "right")),
+            Group("third", "Third", "Which third?", listOf("third-l", "third-c", "third-r"), listOf("third-l", "third-c", "third-r")),
+            Group("two", "Two-thirds", "Which two-thirds?", listOf("two-l", "two-r"), listOf("two-l")),
+            Group("corner", "Corner", "Which corner?", listOf("tl", "tr", "bl", "br"), listOf("tl", "tr", "bl", "br")),
+            Group("center", "Center", "", listOf("center"), listOf("center")),
+        )
     }
 }
+class Group(val id: String, val name: String, val ask: String, val spots: List<String>, val preview: List<String>)
 class Spot(val id: String, val name: String, val x: Double, val y: Double, val w: Double, val h: Double)

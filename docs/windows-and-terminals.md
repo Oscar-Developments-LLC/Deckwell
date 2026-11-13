@@ -61,10 +61,13 @@ A key that opens a menu **on the deck**:
 
 1. Tap the key. The deck lists your open windows, with each app's icon.
 2. Tap a window.
-3. If you have more than one monitor, tap the one you want. The monitors are drawn as they're arranged in Windows.
-4. Tap a spot. The window moves, and the deck goes back to your page.
+3. **Which display?** Tap the monitor you want. The monitors are drawn as they're arranged in Windows. With only one monitor, this screen is skipped.
+4. **What size?** Tap **Maximize**, **Half**, **Third**, **Two-thirds**, **Corner** or **Center**. If that monitor has zones, **Your zones** shows up too.
+5. **Which one?** Tap the exact spot, like **Right half** or **Top left**. Maximize and Center don't need this screen, so the window moves right away.
 
-Tap **Back** (bottom left) to pick a different window, or **Cancel** (bottom right) to close the menu.
+The window moves, and the deck goes back to your page. The top right of the menu shows what you've picked so far.
+
+Tap **Back** (bottom left) to go back one screen, or **Cancel** (bottom right) to close the menu.
 
 **Show window titles:** by default the list shows each app's name and its window title. Titles can show private things, like an email subject, and the deck link is signed but not encrypted. To show only app names, pick **App name only** in the key's settings.
 

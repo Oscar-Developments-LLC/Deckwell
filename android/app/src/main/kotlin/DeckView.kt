@@ -824,84 +824,132 @@ class DeckView(ctx: Context, private val res: Res, private val cb: Callbacks) : 
         pickHits.add(Hit(r, act, -1))
     }
 
+    /** A tile on the size and spot steps: a little screen with [boxes] filled in, and a name under it. */
+    private class PTile(val name: String, val boxes: List<FloatArray>, val zone: Boolean, val act: String, val arg: Int)
+    /** What the size step (3) and spot step (4) show right now, so a tap can find what it hit. */
+    private var pickGroups: List<Group> = emptyList()
+    private var pickSpotIds: List<String> = emptyList()
+
+    private fun spotBox(id: String): FloatArray = WinPick.spot(id)!!.let { floatArrayOf(it.x.toFloat(), it.y.toFloat(), it.w.toFloat(), it.h.toFloat()) }
+    private fun zoneBox(z: SnapZone) = floatArrayOf(z.x.toFloat(), z.y.toFloat(), z.w.toFloat(), z.h.toFloat())
+
     private fun drawPick(c: Canvas, pk: WinPick) {
         pickHits.clear()
         p.color = Color.WHITE; p.shader = bg(); c.drawRect(0f, 0f, W, H, p); p.shader = null
         val win = pk.win
-        // Cancel sits bottom right; Back (on the "Move" step) sits bottom left.
+        val mon = pk.mons.getOrNull(pk.mon)
+        val grp = pk.group
+        val zonesGrp = grp == "zones"
+        val group = WinPick.GROUPS.firstOrNull { it.id == grp }
+        // Cancel sits bottom right; Back (any step after the window list) sits bottom left.
         pill(c, "Cancel", W - PAD, H - 92f, "cancel", right = true)
         if (win != null) pill(c, "Back", PAD, H - 92f, "back", right = false)
-        val title = if (win == null) "Pick a window" else "Move ${win.app}"
-        text(c, fit(title, 34f, res.semibold, W - 2 * PAD), PAD, 76f, 34f, res.semibold, TEXT)
+
+        // Title asks this step's question; the right side shows what's been picked so far.
+        val title = when {
+            win == null -> "Pick a window"
+            !pk.monPicked -> "Which display?"
+            grp == null -> "What size?"
+            zonesGrp -> "Which zone?"
+            else -> group?.ask ?: "Where?"
+        }
+        val crumbs = listOfNotNull(win?.app, if (pk.monPicked && pk.mons.size > 1) mon?.name else null,
+            if (zonesGrp) "Your zones" else group?.name).joinToString("  \u203a  ")
+        val cw = min(width(crumbs, 26f, res.medium), W * 0.5f)
+        if (crumbs.isNotEmpty()) text(c, fit(crumbs, 26f, res.medium, cw), W - PAD, 76f, 26f, res.medium, TEXT3, Paint.Align.RIGHT)
+        text(c, fit(title, 34f, res.semibold, W - 2 * PAD - cw - 40f), PAD, 76f, 34f, res.semibold, TEXT)
 
         val top = 132f; val bottom = H - 120f
         c.save(); c.clipRect(0f, top - 10f, W, bottom)
-        var y = top - pk.scroll
-        if (win == null) {
-            if (pk.wins.isEmpty()) text(c, "No windows are open.", PAD, top + 60f, 30f, res.regular, TEXT2)
-            val cols = if (portrait) 2 else 4
-            val tw = (W - 2 * PAD - (cols - 1) * GAP) / cols; val th = 150f
-            pk.wins.forEachIndexed { i, w ->
-                val x = PAD + (i % cols) * (tw + GAP); val ty = y + (i / cols) * (th + GAP)
-                val r = RectF(x, ty, x + tw, ty + th)
-                p.color = Color.WHITE; p.shader = keyShader(th); c.save(); c.translate(x, ty); rf.set(0f, 0f, tw, th); c.drawRoundRect(rf, 24f, 24f, p); p.shader = null
-                stroke(c, 1f, 1f, tw - 1f, th - 1f, 23f, Color.parseColor("#2c2e3d"), 2f); c.restore()
-                val cy = ty + th / 2
-                val icon = res.icon(w.icon)
-                if (icon != null) { rf.set(x + 28f, cy - 36f, x + 100f, cy + 36f); bp.colorFilter = null; c.drawBitmap(icon, null, rf, bp) }
-                else glyph(c, "app-window", x + 64f, cy, 56f, Color.parseColor("#c9c8d6"))
-                val tx = x + 124f; val mw = tw - 124f - 24f
-                if (w.title != null) {
-                    text(c, fit(w.app, 28f, res.medium, mw), tx, cy - 6f, 28f, res.medium, TEXT)
-                    text(c, fit(w.title, 22f, res.regular, mw), tx, cy + 32f, 22f, res.regular, TEXT3)
-                } else text(c, fit(w.app, 28f, res.medium, mw), tx, cy + 10f, 28f, res.medium, TEXT)
-                pickHits.add(Hit(r, "win", i))
+        val y = top - pk.scroll
+        when {
+            win == null -> {
+                if (pk.wins.isEmpty()) text(c, "No windows are open.", PAD, top + 60f, 30f, res.regular, TEXT2)
+                val cols = if (portrait) 2 else 4
+                val tw = (W - 2 * PAD - (cols - 1) * GAP) / cols; val th = 150f
+                pk.wins.forEachIndexed { i, w ->
+                    val x = PAD + (i % cols) * (tw + GAP); val ty = y + (i / cols) * (th + GAP)
+                    val r = RectF(x, ty, x + tw, ty + th)
+                    p.color = Color.WHITE; p.shader = keyShader(th); c.save(); c.translate(x, ty); rf.set(0f, 0f, tw, th); c.drawRoundRect(rf, 24f, 24f, p); p.shader = null
+                    stroke(c, 1f, 1f, tw - 1f, th - 1f, 23f, Color.parseColor("#2c2e3d"), 2f); c.restore()
+                    val cy = ty + th / 2
+                    val icon = res.icon(w.icon)
+                    if (icon != null) { rf.set(x + 28f, cy - 36f, x + 100f, cy + 36f); bp.colorFilter = null; c.drawBitmap(icon, null, rf, bp) }
+                    else glyph(c, "app-window", x + 64f, cy, 56f, Color.parseColor("#c9c8d6"))
+                    val tx = x + 124f; val mw = tw - 124f - 24f
+                    if (w.title != null) {
+                        text(c, fit(w.app, 28f, res.medium, mw), tx, cy - 6f, 28f, res.medium, TEXT)
+                        text(c, fit(w.title, 22f, res.regular, mw), tx, cy + 32f, 22f, res.regular, TEXT3)
+                    } else text(c, fit(w.app, 28f, res.medium, mw), tx, cy + 10f, 28f, res.medium, TEXT)
+                    pickHits.add(Hit(r, "win", i))
+                }
+                val rowsN = (pk.wins.size + cols - 1) / cols
+                pickMax = max(0f, rowsN * (th + GAP) - GAP - (bottom - top))
             }
-            val rowsN = (pk.wins.size + cols - 1) / cols
-            pickMax = max(0f, rowsN * (th + GAP) - GAP - (bottom - top))
-        } else {
-            val mon = pk.mons.getOrNull(pk.mon)
-            if (pk.mons.size > 1) {
+            mon == null -> { text(c, "The computer didn't report any screens.", PAD, top + 60f, 30f, res.regular, TEXT2); pickMax = 0f }
+            !pk.monPicked -> {
+                // The displays drawn as they're arranged in Windows, as big as the screen allows. Tap one to go on.
                 val minX = pk.mons.minOf { it.x }; val minY = pk.mons.minOf { it.y }
                 val maxX = pk.mons.maxOf { it.x + it.w }; val maxY = pk.mons.maxOf { it.y + it.h }
-                val bw = W - 2 * PAD; val bh = 180f
+                val bw = W - 2 * PAD; val bh = min(bottom - top - 20f, if (portrait) 900f else 760f)
                 val k = min(bw / (maxX - minX).toFloat(), bh / (maxY - minY).toFloat())
                 val offX = PAD + (bw - (maxX - minX) * k) / 2f
+                val offY = y + 10f + (bh - (maxY - minY) * k) / 2f
                 pk.mons.forEachIndexed { i, m ->
-                    val r = RectF(offX + (m.x - minX) * k + 4f, y + (m.y - minY) * k + 4f, offX + (m.x - minX + m.w) * k - 4f, y + (m.y - minY + m.h) * k - 4f)
-                    val sel = i == pk.mon
-                    round(c, r.left, r.top, r.right, r.bottom, 12f, Color.parseColor(if (sel) "#2e2c4a" else "#222433"))
-                    stroke(c, r.left, r.top, r.right, r.bottom, 12f, if (sel) ACCENT else Color.parseColor("#3a3c4e"), if (sel) 4f else 2f)
-                    text(c, fit(m.name, 24f, res.medium, r.width() - 16f), r.centerX(), r.centerY() + 9f, 24f, res.medium, if (sel) TEXT else TEXT2, Paint.Align.CENTER)
+                    val r = RectF(offX + (m.x - minX) * k + 8f, offY + (m.y - minY) * k + 8f, offX + (m.x - minX + m.w) * k - 8f, offY + (m.y - minY + m.h) * k - 8f)
+                    p.color = Color.WHITE; p.shader = keyShader(r.height()); c.save(); c.translate(r.left, r.top); rf.set(0f, 0f, r.width(), r.height()); c.drawRoundRect(rf, 20f, 20f, p); p.shader = null; c.restore()
+                    stroke(c, r.left, r.top, r.right, r.bottom, 20f, if (m.main) ACCENT else Color.parseColor("#3a3c4e"), if (m.main) 3f else 2f)
+                    val fs = min(44f, max(24f, r.height() / 6f))
+                    text(c, fit(m.name, fs, res.semibold, r.width() - 32f), r.centerX(), r.centerY() + fs * 0.1f, fs, res.semibold, TEXT, Paint.Align.CENTER)
+                    val sub = "${m.w} x ${m.h}" + if (m.main) "  \u00b7  Main" else ""
+                    text(c, fit(sub, fs * 0.55f, res.regular, r.width() - 32f), r.centerX(), r.centerY() + fs * 0.1f + fs * 0.95f, fs * 0.55f, res.regular, TEXT3, Paint.Align.CENTER)
                     pickHits.add(Hit(r, "mon", i))
                 }
-                y += 180f + 48f
+                pickMax = 0f
             }
-            if (mon == null) text(c, "The computer didn't report any screens.", PAD, y + 60f, 30f, res.regular, TEXT2)
-            else {
-                val spots = WinPick.SPOTS.map { Triple(it.id, it.name, floatArrayOf(it.x.toFloat(), it.y.toFloat(), it.w.toFloat(), it.h.toFloat())) } +
-                    mon.zones.map { z -> Triple("zone:" + z.id, z.name, floatArrayOf(z.x.toFloat(), z.y.toFloat(), z.w.toFloat(), z.h.toFloat())) }
-                val cols = if (portrait) 3 else 6
-                val tw = (W - 2 * PAD - (cols - 1) * GAP) / cols
-                val ph = (tw - 36f) * (mon.h.toFloat() / mon.w).coerceIn(0.4f, 0.8f)
-                val th = ph + 36f + 46f
-                val y0 = y
-                spots.forEachIndexed { i, (id, name, f) ->
-                    val x = PAD + (i % cols) * (tw + GAP); val ty = y0 + (i / cols) * (th + GAP)
-                    val r = RectF(x, ty, x + tw, ty + th)
-                    p.color = Color.WHITE; p.shader = keyShader(th); c.save(); c.translate(x, ty); rf.set(0f, 0f, tw, th); c.drawRoundRect(rf, 22f, 22f, p); p.shader = null
-                    stroke(c, 1f, 1f, tw - 1f, th - 1f, 21f, Color.parseColor("#2c2e3d"), 2f); c.restore()
-                    val sx = x + 18f; val sy = ty + 18f; val sw = tw - 36f
-                    round(c, sx, sy, sx + sw, sy + ph, 8f, Color.parseColor("#2a2c3b"))
-                    round(c, sx + sw * f[0] + 3f, sy + ph * f[1] + 3f, sx + sw * (f[0] + f[2]) - 3f, sy + ph * (f[1] + f[3]) - 3f, 6f, if (id.startsWith("zone:")) ACCENT2 else ACCENT)
-                    text(c, fit(name, 22f, res.medium, tw - 20f), r.centerX(), ty + ph + 36f + 30f, 22f, res.medium, TEXT, Paint.Align.CENTER)
-                    pickHits.add(Hit(r, "spot", i))
-                }
-                val rowsN = (spots.size + cols - 1) / cols
-                pickMax = max(0f, (y0 + pk.scroll - top) + rowsN * (th + GAP) - GAP - (bottom - top))
+            grp == null -> {
+                pickGroups = WinPick.GROUPS
+                val tiles = WinPick.GROUPS.mapIndexed { i, g -> PTile(g.name, g.preview.map { spotBox(it) }, false, "grp", i) } +
+                    (if (mon.zones.isNotEmpty()) listOf(PTile("Your zones", mon.zones.map { zoneBox(it) }, true, "grp", WinPick.GROUPS.size)) else emptyList())
+                drawTiles(c, tiles, y, top, bottom, mon, if (portrait) 2 else 4)
+            }
+            else -> {
+                pickSpotIds = if (zonesGrp) mon.zones.map { "zone:" + it.id } else group?.spots ?: emptyList()
+                val tiles = if (zonesGrp) mon.zones.mapIndexed { i, z -> PTile(z.name.ifEmpty { "Zone" }, listOf(zoneBox(z)), true, "spot", i) }
+                    else (group?.spots ?: emptyList()).mapIndexed { i, id -> PTile(WinPick.spot(id)!!.name, listOf(spotBox(id)), false, "spot", i) }
+                // Corners sit in a 2 x 2 grid, the same way they sit on the screen.
+                drawTiles(c, tiles, y, top, bottom, mon, if (grp == "corner" || portrait) 2 else 4)
             }
         }
         c.restore()
+    }
+
+    /** Lays out tiles in up to [maxCols] columns. With 1 or 2 rows they shrink to fit; more rows scroll. */
+    private fun drawTiles(c: Canvas, tiles: List<PTile>, y: Float, top: Float, bottom: Float, mon: Monitor, maxCols: Int) {
+        val n = tiles.size
+        val cols = when { n <= 1 -> 1; n <= maxCols -> n; n <= 6 && maxCols >= 3 && !portrait -> 3; else -> maxCols }
+        val rows = (n + cols - 1) / cols
+        val avail = bottom - top
+        val labelH = 76f; val pad = 22f
+        val tw = (W - 2 * PAD - (cols - 1) * GAP) / cols
+        val aspect = (mon.h.toFloat() / mon.w).coerceIn(0.4f, 0.8f)
+        var ph = (tw - 2 * pad) * aspect
+        if (rows <= 2) ph = min(ph, (avail - (rows - 1) * GAP) / rows - pad - labelH)
+        ph = max(ph, 80f)
+        val pw = min(tw - 2 * pad, ph / aspect)
+        val th = pad + ph + labelH
+        tiles.forEachIndexed { i, t ->
+            val x = PAD + (i % cols) * (tw + GAP); val ty = y + (i / cols) * (th + GAP)
+            val r = RectF(x, ty, x + tw, ty + th)
+            p.color = Color.WHITE; p.shader = keyShader(th); c.save(); c.translate(x, ty); rf.set(0f, 0f, tw, th); c.drawRoundRect(rf, 24f, 24f, p); p.shader = null
+            stroke(c, 1f, 1f, tw - 1f, th - 1f, 23f, Color.parseColor("#2c2e3d"), 2f); c.restore()
+            val sx = x + (tw - pw) / 2f; val sy = ty + pad
+            round(c, sx, sy, sx + pw, sy + ph, 10f, Color.parseColor("#2a2c3b"))
+            for (f in t.boxes) round(c, sx + pw * f[0] + 4f, sy + ph * f[1] + 4f, sx + pw * (f[0] + f[2]) - 4f, sy + ph * (f[1] + f[3]) - 4f, 7f, if (t.zone) ACCENT2 else ACCENT)
+            text(c, fit(t.name, 28f, res.medium, tw - 24f), r.centerX(), sy + ph + 50f, 28f, res.medium, TEXT, Paint.Align.CENTER)
+            pickHits.add(Hit(r, t.act, t.arg))
+        }
+        pickMax = max(0f, rows * (th + GAP) - GAP - avail)
     }
 
     private fun pickTouch(e: MotionEvent, x: Float, y: Float): Boolean {
@@ -926,17 +974,31 @@ class DeckView(ctx: Context, private val res: Res, private val cb: Callbacks) : 
     }
 
     private fun pickAct(pk: WinPick, h: Hit) {
+        val many = pk.mons.size > 1
         when (h.act) {
             "cancel" -> pick = null
-            "back" -> { pk.win = null; pk.scroll = 0f; invalidate() }
-            "win" -> { pk.win = pk.wins.getOrNull(h.arg); pk.scroll = 0f; invalidate() }
-            "mon" -> { pk.mon = h.arg; invalidate() }
-            "spot" -> {
-                val win = pk.win ?: return; val mon = pk.mons.getOrNull(pk.mon) ?: return
-                val ids = WinPick.SPOTS.map { it.id } + mon.zones.map { "zone:" + it.id }
-                ids.getOrNull(h.arg)?.let { cb.snap(pk.key, win.id, mon.id, it) }
-                pick = null
+            "back" -> {
+                when {
+                    pk.group != null -> pk.group = null
+                    pk.monPicked && many -> pk.monPicked = false
+                    else -> { pk.win = null; pk.monPicked = false }
+                }
+                pk.scroll = 0f; invalidate()
             }
+            "win" -> { pk.win = pk.wins.getOrNull(h.arg); pk.monPicked = !many; pk.group = null; pk.scroll = 0f; invalidate() }
+            "mon" -> { pk.mon = h.arg; pk.monPicked = true; pk.group = null; pk.scroll = 0f; invalidate() }
+            "grp" -> {
+                val g = pickGroups.getOrNull(h.arg)
+                if (g != null && g.spots.size == 1) { snapTo(pk, g.spots[0]); return }
+                pk.group = g?.id ?: "zones"; pk.scroll = 0f; invalidate()
+            }
+            "spot" -> pickSpotIds.getOrNull(h.arg)?.let { snapTo(pk, it) }
         }
+    }
+
+    private fun snapTo(pk: WinPick, spot: String) {
+        val win = pk.win ?: return; val mon = pk.mons.getOrNull(pk.mon) ?: return
+        cb.snap(pk.key, win.id, mon.id, spot)
+        pick = null
     }
 }

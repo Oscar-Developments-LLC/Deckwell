@@ -178,7 +178,7 @@ When a Window picker key is pressed, the desktop sends:
 - `wins` is topmost first. `title` is left out when the user hides titles. `icon` is an icon id the deck fetches with `need`.
 - `mons` uses the desktop's own pixel coordinates (they can be negative). Zone `x`, `y`, `w`, `h` are fractions of the monitor's work area.
 
-After the user picks a window, a monitor and a spot, the deck sends:
+After the user picks a window, a monitor and a spot (the deck asks for the spot in two screens: a size, then the spot inside it), the deck sends:
 
 ```json
 {"t":"snap","key":"<key id>","win":"<window id>","mon":"<monitor id>","spot":"left"}

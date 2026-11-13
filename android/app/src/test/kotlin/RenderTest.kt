@@ -157,8 +157,54 @@ class RenderTest {
         {"id":"\\\\.\\DISPLAY2","name":"Display 2","x":2560,"y":180,"w":1920,"h":1080,"main":false,"zones":[]}]}"""))
 
     @Test fun pickWindow() = render("deck_pick_window") { v -> v.layout = panelPage(); v.connected = true; v.pick = pick() }
-    @Test fun pickSpot() = render("deck_pick_spot") { v -> v.layout = panelPage(); v.connected = true; v.pick = pick().also { it.win = it.wins[1] } }
-    @Test fun pickSpotPortrait() = render("deck_pick_spot_portrait", 1200, 1920) { v -> v.layout = panelPage(); v.connected = true; v.pick = pick().also { it.win = it.wins[1] } }
+    // Steps after the window: display, then size, then the spot inside that size.
+    @Test fun pickDisplay() = render("deck_pick_display") { v -> v.layout = panelPage(); v.connected = true; v.pick = pick().also { it.win = it.wins[1] } }
+    @Test fun pickSize() = render("deck_pick_size") { v -> v.layout = panelPage(); v.connected = true; v.pick = pick().also { it.win = it.wins[1]; it.monPicked = true } }
+    @Test fun pickHalf() = render("deck_pick_half") { v -> v.layout = panelPage(); v.connected = true; v.pick = pick().also { it.win = it.wins[1]; it.monPicked = true; it.group = "half" } }
+    @Test fun pickCorner() = render("deck_pick_corner") { v -> v.layout = panelPage(); v.connected = true; v.pick = pick().also { it.win = it.wins[1]; it.monPicked = true; it.group = "corner" } }
+    @Test fun pickThird2() = render("deck_pick_third_display2") { v -> v.layout = panelPage(); v.connected = true; v.pick = pick().also { it.win = it.wins[0]; it.mon = 1; it.monPicked = true; it.group = "third" } }
+    @Test fun pickDisplayPortrait() = render("deck_pick_display_portrait", 1200, 1920) { v -> v.layout = panelPage(); v.connected = true; v.pick = pick().also { it.win = it.wins[1] } }
+    @Test fun pickSizePortrait() = render("deck_pick_size_portrait", 1200, 1920) { v -> v.layout = panelPage(); v.connected = true; v.pick = pick().also { it.win = it.wins[1]; it.monPicked = true } }
+    @Test fun pickCornerPortrait() = render("deck_pick_corner_portrait", 1200, 1920) { v -> v.layout = panelPage(); v.connected = true; v.pick = pick().also { it.win = it.wins[1]; it.monPicked = true; it.group = "corner" } }
+
+    /** Taps through the picker: window, Display 2, Half, Right half. Back steps back one screen at a time. */
+    @Test fun pickFlow() {
+        val ctx = RuntimeEnvironment.getApplication()
+        var sent = ""
+        val v = DeckView(ctx, Res(ctx), object : DeckView.Callbacks {
+            override fun press(k: DKey) {}
+            override fun release(k: DKey) {}
+            override fun slider(s: DSlider, value: Int) {}
+            override fun sliderButton(s: DSlider) {}
+            override fun pageChanged(id: String) {}
+            override fun pairApprove() {}
+            override fun pairCancel() {}
+            override fun snap(key: String, win: String, mon: String, spot: String) { sent = "$key|$win|$mon|$spot" }
+        })
+        v.measure(View.MeasureSpec.makeMeasureSpec(1920, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(1200, View.MeasureSpec.EXACTLY))
+        v.layout(0, 0, 1920, 1200)
+        v.layout = panelPage(); v.connected = true
+        val pk = pick(); v.pick = pk
+        val bmp = Bitmap.createBitmap(1920, 1200, Bitmap.Config.ARGB_8888)
+        fun tap(x: Float, y: Float) {
+            v.draw(Canvas(bmp))
+            val t = android.os.SystemClock.uptimeMillis()
+            v.dispatchTouchEvent(android.view.MotionEvent.obtain(t, t, android.view.MotionEvent.ACTION_DOWN, x, y, 0))
+            v.dispatchTouchEvent(android.view.MotionEvent.obtain(t, t + 50, android.view.MotionEvent.ACTION_UP, x, y, 0))
+        }
+        tap(700f, 200f); assertEquals("Visual Studio Code", pk.win?.app); assertEquals(false, pk.monPicked)
+        tap(1500f, 560f); assertEquals(1, pk.mon); assertEquals(true, pk.monPicked)
+        tap(960f, 250f); assertEquals("half", pk.group)
+        tap(80f, 1120f); assertEquals("Back goes to sizes", null, pk.group)
+        tap(80f, 1120f); assertEquals("Back goes to displays", false, pk.monPicked)
+        tap(1500f, 560f); tap(960f, 250f); tap(700f, 250f)
+        assertEquals("snap|2|\\\\.\\DISPLAY2|right", sent)
+        assertEquals("picker closes after a spot", null, v.pick)
+        // Maximize moves the window right away, with no fourth screen.
+        sent = ""; val pk2 = pick(); v.pick = pk2
+        tap(700f, 200f); tap(500f, 560f); tap(300f, 250f)
+        assertEquals("snap|2|\\\\.\\DISPLAY1|max", sent)
+    }
 
     /* ---------------- 1.1: moved Back key, panel text that fills the panel ---------------- */
     @Test fun movedBack() = render("deck_folder_back_moved") { v ->

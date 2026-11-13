@@ -13,8 +13,8 @@ android {
 
     defaultConfig {
         applicationId = "com.oscardevelopments.deckwell"
-        versionCode = 10101
-        versionName = "1.1.1"
+        versionCode = 10102
+        versionName = "1.1.2"
     }
 
     // Two builds from one codebase. No AndroidX anywhere: plain framework APIs only.

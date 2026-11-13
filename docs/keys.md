@@ -91,7 +91,7 @@ Moves the active window (or an app's window) to a spot on a monitor: halves, thi
 
 ### Window picker
 
-Opens a menu on the deck. Pick any open window, then a monitor and a spot. See [Windows and terminals](windows-and-terminals.md#window-picker).
+Opens a menu on the deck. Pick any open window, then a display, a size (half, third, corner, ...) and the exact spot. See [Windows and terminals](windows-and-terminals.md#window-picker).
 
 ### Window layout
 
